@@ -29,15 +29,14 @@ def setup_dirs(base_dir=None):
 
 @dataclass
 class ExperimentConfig:
-    # CNN models get 40 epochs, others get different defaults
-    cnn_epochs: int = 40
+    cnn_epochs: int = 80
     mlp_epochs: int = 120
-    lenet_epochs: int = 120
-    mpc_cnn_epochs: int = 40
+    lenet_epochs: int = 40
+    mpc_cnn_epochs: int = 80
     mpc_mlp_epochs: int = 80
-    mpc_lenet_epochs: int = 80
+    mpc_lenet_epochs: int = 40
     attack_epochs: int = 20
-    num_shadow_models: int = 5
+    num_shadow_models: int = 8
     target_train_size: int = 10000
     batch_size: int = 128
     mpc_batch_size: int = 32
