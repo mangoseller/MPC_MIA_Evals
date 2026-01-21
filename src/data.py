@@ -1,10 +1,9 @@
 import os
 import numpy as np
 import torch as t
+import torch.nn as nn
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
-from training import plaintext_train_model
-
 
 def partition_dataset_for_mia(full_dataset, target_train_size, shadow_pool_ratio=0.5, seed=42):
     
@@ -31,11 +30,14 @@ def partition_dataset_for_mia(full_dataset, target_train_size, shadow_pool_ratio
     
     return target_train_indices, target_test_indices, shadow_pool_indices
 
+
 def train_shadow_models(num_shadows, model_class, full_dataset, shadow_pool_indices, 
-                        model_name, base_dir, num_epochs=10, device='cuda', verbose=True,
-                        patience=10, min_delta=0.001):
+                        model_name, base_dir, num_epochs, device='cuda', verbose=True):
     """
     Trains shadow models on the shadow pool, which is disjoint from the target model's training data.
+    
+    Shadow models train for exactly num_epochs (matching the target model's actual training epochs).
+    No early stopping is applied to shadow models.
     
     Args:
         num_shadows: Number of shadow models to train
@@ -44,11 +46,9 @@ def train_shadow_models(num_shadows, model_class, full_dataset, shadow_pool_indi
         shadow_pool_indices: Indices for shadow model training pool
         model_name: Name for saving checkpoints
         base_dir: Base directory for saving shadow models
-        num_epochs: Number of epochs to train (should match target model's max epochs)
+        num_epochs: Number of epochs to train (should match target model's actual trained epochs)
         device: Training device
         verbose: Whether to show progress
-        patience: Early stopping patience
-        min_delta: Early stopping minimum delta
     
     Returns:
         shadow_models: List of trained shadow models
@@ -64,7 +64,7 @@ def train_shadow_models(num_shadows, model_class, full_dataset, shadow_pool_indi
     os.makedirs(shadow_save_dir, exist_ok=True)
 
     print(f"Training {num_shadows} shadow models on pool of {shadow_pool_size} samples...")
-    print(f"Shadow models will train for {num_epochs} epochs (matching target model config)")
+    print(f"Shadow models will train for {num_epochs} epochs (matching target model)")
 
     shadow_iter = tqdm(range(num_shadows), desc="Shadow Models", disable=not verbose)
     for i in shadow_iter:
@@ -84,18 +84,14 @@ def train_shadow_models(num_shadows, model_class, full_dataset, shadow_pool_indi
         
         shadow_iter.set_postfix(model=f"{i+1}/{num_shadows}")
         
-        # Shadow models save directly with simple naming (no _final suffix needed)
-        shadow_model, _, _ = plaintext_train_model(
+        # Train shadow model for exactly num_epochs (no early stopping)
+        shadow_model = _train_shadow_model(
             shadow_model, 
             train_loader, 
             num_epochs=num_epochs, 
             lr=1e-3, 
             device=device,
-            save_dir=None,  # Don't use the new save format for shadows
-            model_name=f"shadow_{i}",
-            verbose=False,  # Suppress inner progress to avoid clutter
-            patience=patience,
-            min_delta=min_delta
+            verbose=False  # Suppress inner progress to avoid clutter
         )
     
         save_path = os.path.join(shadow_save_dir, f"shadow_{i}.pt")
@@ -105,6 +101,45 @@ def train_shadow_models(num_shadows, model_class, full_dataset, shadow_pool_indi
         shadow_data_indices.append((train_indices, test_indices))
         
     return shadow_models, shadow_data_indices
+
+
+def _train_shadow_model(model, train_loader, num_epochs, lr, device, verbose=False):
+    """
+    Train a shadow model for exactly num_epochs without early stopping.
+    
+    This is a simplified training loop specifically for shadow models.
+    """
+    model = model.to(device)
+    optimizer = t.optim.SGD(model.parameters(), lr=lr, momentum=0.9)
+    criterion = nn.CrossEntropyLoss()
+
+    epoch_iter = tqdm(range(num_epochs), desc="Training", disable=not verbose)
+    
+    for epoch in epoch_iter:
+        model.train()
+        running_loss = 0.0
+        correct = 0
+        total = 0
+
+        for inputs, targets in train_loader:
+            inputs, targets = inputs.to(device), targets.to(device)
+
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+            loss.backward()
+            optimizer.step()
+
+            running_loss += loss.item()
+            predictions = outputs.argmax(dim=1)
+            correct += (predictions == targets).sum().item()
+            total += targets.size(0)
+
+        avg_loss = running_loss / len(train_loader)
+        accuracy = 100.0 * correct / total
+        epoch_iter.set_postfix(loss=f"{avg_loss:.4f}", acc=f"{accuracy:.2f}%")
+
+    return model
 
 
 def regenerate_shadow_indices(num_shadows, shadow_pool_indices, seed=42):

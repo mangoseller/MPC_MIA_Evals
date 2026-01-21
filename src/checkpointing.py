@@ -1,5 +1,6 @@
 import os
 import glob
+import re
 import torch as t
 import crypten
 from attack import AttackNet
@@ -8,6 +9,9 @@ def check_plaintext_target_exists(name, dirs):
     """
     Check if a COMPLETE plaintext target model checkpoint exists.
     Complete checkpoints are marked with _final.pt suffix.
+    
+    Returns:
+        (exists: bool, path: str or None)
     """
     # Look for final checkpoint (could be at any epoch due to early stopping)
     pattern = os.path.join(dirs['plaintext'], f"{name}_epoch*_final.pt")
@@ -21,10 +25,12 @@ def check_plaintext_target_exists(name, dirs):
     return False, None
 
 def check_mpc_target_exists(name, dirs):
-
     """
     Check if a COMPLETE MPC checkpoint exists for a model.
     Complete checkpoints are marked with _final.pt suffix.
+    
+    Returns:
+        (exists: bool, path: str or None)
     """
     pattern = os.path.join(dirs['MPC'], f"{name}_epoch*_final.pt")
     final_checkpoints = glob.glob(pattern)
@@ -49,6 +55,26 @@ def check_attack_model_exists(arch_key, dirs):
     path = os.path.join(dirs['attack_models'], f"attack_{arch_key}.pt")
     return os.path.exists(path), path
 
+
+def extract_epochs_from_checkpoint(checkpoint_path):
+    """
+    Extract the number of epochs from a checkpoint filename.
+    
+    Examples:
+        "PlainTextCNN_Sigmoid_epoch20_final.pt" -> 20
+        "MpcMLP_Tanh_epoch80_final.pt" -> 80
+    
+    Returns:
+        int: Number of epochs, or None if not found
+    """
+    if checkpoint_path is None:
+        return None
+    
+    filename = os.path.basename(checkpoint_path)
+    match = re.search(r'_epoch(\d+)_final\.pt$', filename)
+    if match:
+        return int(match.group(1))
+    return None
 
 def load_plaintext_model(model_class, path, device):
     model = model_class(num_classes=10).to(device)

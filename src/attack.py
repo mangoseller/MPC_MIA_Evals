@@ -6,8 +6,6 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset
 import crypten
 from tqdm import tqdm
-from training import EarlyStopping
-
 
 class AttackNet(nn.Module):
     def __init__(self, input_dim=10):
@@ -68,13 +66,25 @@ def prepare_attack_dataset(shadow_models, shadow_indices, full_dataset, device='
     return X_attack, y_attack
 
 
-def train_attack_model(X_attack, y_attack, save_path=None, epochs=20, device='cuda', verbose=True,
-                       patience=10, min_delta=0.001):
+def train_attack_model(X_attack, y_attack, save_path=None, epochs=20, device='cuda', verbose=True):
+    """
+    Train the attack model for exactly the specified number of epochs.
+    No early stopping is applied to attack models.
     
+    Args:
+        X_attack: Attack features (softmax outputs from shadow models)
+        y_attack: Attack labels (membership labels)
+        save_path: Path to save the trained model
+        epochs: Number of epochs to train
+        device: Training device
+        verbose: Whether to show progress
+    
+    Returns:
+        attack_model: Trained attack model
+    """
     attack_model = AttackNet().to(device)
     optimizer = t.optim.Adam(attack_model.parameters(), lr=0.001)
     criterion = nn.BCELoss() # Binary Cross Entropy Loss
-    early_stopping = EarlyStopping(patience=patience, min_delta=min_delta)
     
     dataset = t.utils.data.TensorDataset(X_attack, y_attack)
     loader = DataLoader(dataset, batch_size=64, shuffle=True)
@@ -93,11 +103,6 @@ def train_attack_model(X_attack, y_attack, save_path=None, epochs=20, device='cu
         
         avg_loss = epoch_loss / len(loader)
         epoch_iter.set_postfix(loss=f"{avg_loss:.4f}")
-        
-        # Check early stopping
-        if early_stopping(avg_loss):
-            tqdm.write(f"Attack model early stopping at epoch {epoch + 1}")
-            break
 
     if save_path:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)

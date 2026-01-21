@@ -23,7 +23,8 @@ from checkpointing import (
     load_mpc_model,
     load_shadow_models,
     load_attack_model,
-    get_attack_model_for_architecture
+    get_attack_model_for_architecture,
+    extract_epochs_from_checkpoint
 )
 from runner import run_experiment, print_results_summary, interactive_config_loop
 
@@ -55,6 +56,7 @@ __all__ = [
     'load_shadow_models',
     'load_attack_model',
     'get_attack_model_for_architecture',
+    'extract_epochs_from_checkpoint',
     
     'run_experiment',
     'print_results_summary',

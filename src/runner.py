@@ -26,7 +26,8 @@ from checkpointing import (
     load_mpc_model,
     load_shadow_models,
     load_attack_model,
-    get_attack_model_for_architecture
+    get_attack_model_for_architecture,
+    extract_epochs_from_checkpoint
 )
 
 
@@ -69,7 +70,6 @@ def run_experiment(cfg: ExperimentConfig, verbose: bool = True):
     # Plaintext Models
     plaintext_iter = tqdm(PLAINTEXT_MODELS.items(), desc="Plaintext Models", disable=not verbose)
     for name, model_class in plaintext_iter:
-        epochs_trained = False
         plaintext_iter.set_postfix(model=name)
         print(f"\n{'='*60}")
         print(f"Processing model: {name}")
@@ -85,6 +85,11 @@ def run_experiment(cfg: ExperimentConfig, verbose: bool = True):
         if target_exists:
             print(f"[SKIP] Target model already trained, loading from: {target_path}")
             target_model = load_plaintext_model(model_class, target_path, device)
+            # Extract epochs from checkpoint filename for shadow training
+            epochs_trained = extract_epochs_from_checkpoint(target_path)
+            if epochs_trained is None:
+                epochs_trained = num_epochs  # Fallback to configured epochs
+            print(f"Target was trained for {epochs_trained} epochs")
         else:
             print(f"[TRAIN] Training target model for {num_epochs} epochs...")
             model = model_class(num_classes=10).to(device)
@@ -110,10 +115,10 @@ def run_experiment(cfg: ExperimentConfig, verbose: bool = True):
             # Regenerate indices with same seed for consistency
             shadow_indices = regenerate_shadow_indices(cfg.num_shadow_models, shadow_pool_idx, seed=cfg.seed)
         else:
-            print(f"[TRAIN] Training {cfg.num_shadow_models} shadow models for {num_epochs} epochs each...")
+            print(f"[TRAIN] Training {cfg.num_shadow_models} shadow models for {epochs_trained} epochs each...")
             # Reset the seed before training shadows to ensure reproducibility
             np.random.seed(cfg.seed)
-            # Shadow models train for the FULL target model epochs (not early stopped count)
+            # Shadow models train for the same epochs as target (no early stopping)
             shadow_models, shadow_indices = train_shadow_models(
                 num_shadows=cfg.num_shadow_models,
                 model_class=model_class,
@@ -121,11 +126,9 @@ def run_experiment(cfg: ExperimentConfig, verbose: bool = True):
                 shadow_pool_indices=shadow_pool_idx,
                 model_name=name,
                 base_dir=DIRS['shadow_models'],
-                num_epochs=epochs_trained if epochs_trained else cfg.attack_epochs,
+                num_epochs=epochs_trained,
                 device=device,
-                verbose=verbose,
-                patience=cfg.early_stopping_patience,
-                min_delta=cfg.early_stopping_min_delta
+                verbose=verbose
             )
         
         # Check if attack model exists
@@ -135,15 +138,15 @@ def run_experiment(cfg: ExperimentConfig, verbose: bool = True):
             print(f"[SKIP] Attack model already trained, loading from: {attack_path}")
             attack_model = load_attack_model(attack_path, device)
         else:
-            print(f"[TRAIN] Training attack model...")
+            print(f"[TRAIN] Training attack model for {cfg.attack_epochs} epochs...")
             X_attack, y_attack = prepare_attack_dataset(shadow_models, shadow_indices, full_dataset, device=device, verbose=verbose)
             attack_path = f"{DIRS['attack_models']}/attack_{arch_key}.pt"
             attack_model = train_attack_model(
-                X_attack, y_attack, epochs=cfg.attack_epochs, 
-                device=device, save_path=attack_path,
-                verbose=verbose,
-                patience=cfg.early_stopping_patience,
-                min_delta=cfg.early_stopping_min_delta
+                X_attack, y_attack, 
+                epochs=cfg.attack_epochs, 
+                device=device, 
+                save_path=attack_path,
+                verbose=verbose
             )
         
         attack_models[arch_key] = attack_model
@@ -166,7 +169,6 @@ def run_experiment(cfg: ExperimentConfig, verbose: bool = True):
     # MPC Models
     mpc_iter = tqdm(MPC_MODELS.items(), desc="MPC Models", disable=not verbose)
     for name, model_class in mpc_iter:
-        epochs_trained = False
         mpc_iter.set_postfix(model=name)
         print(f"\n{'='*60}")
         print(f"Processing model: {name}")
@@ -176,11 +178,15 @@ def run_experiment(cfg: ExperimentConfig, verbose: bool = True):
         num_epochs = cfg.get_mpc_epochs(name)
         
         # Check if MPC target model exists (look for complete checkpoint)
-        mpc_exists, mpc_path = check_mpc_target_exists(name, DIRS, num_epochs)
+        mpc_exists, mpc_path = check_mpc_target_exists(name, DIRS)
         
         if mpc_exists:
             print(f"[SKIP] MPC target model already trained, loading from: {mpc_path}")
             target_model = load_mpc_model(model_class, mpc_path)
+            epochs_trained = extract_epochs_from_checkpoint(mpc_path)
+            if epochs_trained is None:
+                epochs_trained = num_epochs
+            print(f"MPC target was trained for {epochs_trained} epochs")
         else:
             print(f"[TRAIN] Training MPC target model for {num_epochs} epochs...")
             model = model_class(num_classes=10)
@@ -332,22 +338,22 @@ def interactive_config_loop(cfg: ExperimentConfig) -> ExperimentConfig:
 
 def parse_args():
     parser = argparse.ArgumentParser(description='MIA Experiment on Plaintext and MPC Models') 
-    parser.add_argument('--cnn-epochs', type=int, default=40,
-                        help='Number of epochs for CNN model training (default: 40)')
+    parser.add_argument('--cnn-epochs', type=int, default=80,
+                        help='Number of epochs for CNN model training (default: 80)')
     parser.add_argument('--mlp-epochs', type=int, default=120,
                         help='Number of epochs for MLP model training (default: 120)')
-    parser.add_argument('--lenet-epochs', type=int, default=120,
-                        help='Number of epochs for LeNet model training (default: 120)')
-    parser.add_argument('--mpc-cnn-epochs', type=int, default=40,
-                        help='Number of epochs for MPC CNN model training (default: 40)')
-    parser.add_argument('--mpc-mlp-epochs', type=int, default=80,
-                        help='Number of epochs for MPC MLP model training (default: 80)')
-    parser.add_argument('--mpc-lenet-epochs', type=int, default=80,
-                        help='Number of epochs for MPC LeNet model training (default: 80)')
-    parser.add_argument('--attack-epochs', type=int, default=50,
-                        help='Number of epochs for attack model training (default: 50)')
-    parser.add_argument('--num-shadow-models', type=int, default=5,
-                        help='Number of shadow models to train (default: 5)')
+    parser.add_argument('--lenet-epochs', type=int, default=40,
+                        help='Number of epochs for LeNet model training (default: 40)')
+    parser.add_argument('--mpc-cnn-epochs', type=int, default=80,
+                        help='Number of epochs for MPC CNN model training (default: 80)')
+    parser.add_argument('--mpc-mlp-epochs', type=int, default=120,
+                        help='Number of epochs for MPC MLP model training (default: 120)')
+    parser.add_argument('--mpc-lenet-epochs', type=int, default=40,
+                        help='Number of epochs for MPC LeNet model training (default: 40)')
+    parser.add_argument('--attack-epochs', type=int, default=30,
+                        help='Number of epochs for attack model training (default: 30)')
+    parser.add_argument('--num-shadow-models', type=int, default=9,
+                        help='Number of shadow models to train (default: 9)')
     parser.add_argument('--target-train-size', type=int, default=10000,
                         help='Size of target model training set (default: 10000)')
     parser.add_argument('--batch-size', type=int, default=128,
@@ -363,9 +369,9 @@ def parse_args():
     parser.add_argument('--num-workers', type=int, default=2,
                         help='Number of data loader workers (default: 2)')
     parser.add_argument('--early-stopping-patience', type=int, default=10,
-                        help='Early stopping patience (default: 10)')
+                        help='Early stopping patience for target models (default: 10)')
     parser.add_argument('--early-stopping-min-delta', type=float, default=0.001,
-                        help='Early stopping minimum delta (default: 0.001)')
+                        help='Early stopping minimum delta for target models (default: 0.001)')
     parser.add_argument('--quiet', action='store_true',
                         help='Suppress verbose output')
     parser.add_argument('--no-interactive', action='store_true',

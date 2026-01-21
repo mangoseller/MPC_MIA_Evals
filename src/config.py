@@ -33,10 +33,10 @@ class ExperimentConfig:
     mlp_epochs: int = 120
     lenet_epochs: int = 40
     mpc_cnn_epochs: int = 80
-    mpc_mlp_epochs: int = 80
+    mpc_mlp_epochs: int = 120
     mpc_lenet_epochs: int = 40
-    attack_epochs: int = 20
-    num_shadow_models: int = 8
+    attack_epochs: int = 30
+    num_shadow_models: int = 9
     target_train_size: int = 10000
     batch_size: int = 128
     mpc_batch_size: int = 32
@@ -44,7 +44,7 @@ class ExperimentConfig:
     shadow_pool_ratio: float = 0.5
     seed: int = 42
     num_workers: int = 2
-    # Early stopping parameters
+    # Early stopping parameters (only for target models)
     early_stopping_patience: int = 10
     early_stopping_min_delta: float = 0.001
     
@@ -114,7 +114,7 @@ class ExperimentConfig:
             'Shadow & Attack': ['attack_epochs', 'num_shadow_models'],
             'Data': ['target_train_size', 'shadow_pool_ratio', 'seed'],
             'Training': ['batch_size', 'mpc_batch_size', 'learning_rate', 'num_workers'],
-            'Early Stopping': ['early_stopping_patience', 'early_stopping_min_delta'],
+            'Early Stopping (Target Only)': ['early_stopping_patience', 'early_stopping_min_delta'],
         }
         
         for group_name, setting_names in groups.items():
@@ -123,4 +123,5 @@ class ExperimentConfig:
                 value = getattr(self, name)
                 print(f"    {name:<28} {value}")
         
-        print("\n" + "=" * 60)
+        print("\n  Note: Shadow models train for the same epochs as their target.")
+        print("=" * 60)
