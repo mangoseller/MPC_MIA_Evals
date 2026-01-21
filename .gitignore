@@ -1,6 +1,7 @@
-*
+*/
 
-!experiment_draft.ipynb
+!src/
+!src/**
 
 !.gitignore
-
+src/*/
