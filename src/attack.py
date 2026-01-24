@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset
 import crypten
 from tqdm import tqdm
+import gc 
 
 class AttackNet(nn.Module):
     def __init__(self, input_dim=10):
@@ -139,6 +140,8 @@ def evaluate_mia_attack(target_model, attack_model, train_loader, test_loader, d
                     output_enc = target_model(x_input)
                     # Use get_plain_text() to get logits for the attack model
                     batch_preds = F.softmax(output_enc.get_plain_text(), dim=1)
+                    del x_input, output_enc # Free cryptensors
+                gc.collect()
             else:
                 # Standard PyTorch Path
                 inputs = inputs.to(device)

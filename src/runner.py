@@ -58,6 +58,10 @@ def run_experiment(cfg: ExperimentConfig, verbose: bool = True):
     target_train_loader = DataLoader(target_train_subset, batch_size=cfg.batch_size, shuffle=True, num_workers=cfg.num_workers)
     target_test_loader = DataLoader(target_test_subset, batch_size=cfg.batch_size, shuffle=False, num_workers=cfg.num_workers)
     target_train_loader_mpc = DataLoader(target_train_subset, batch_size=cfg.mpc_batch_size, shuffle=True, num_workers=cfg.num_workers)
+    
+    
+    target_train_loader_mpc_eval = DataLoader(target_train_subset, batch_size=cfg.mpc_batch_size, shuffle=False, num_workers=0)
+    target_test_loader_mpc_eval = DataLoader(target_test_subset, batch_size=cfg.mpc_batch_size, shuffle=False, num_workers=0)
 
     criterion = nn.CrossEntropyLoss()
 
@@ -216,10 +220,10 @@ def run_experiment(cfg: ExperimentConfig, verbose: bool = True):
             acc, prec, rec = evaluate_mia_attack(
                 target_model=target_model,
                 attack_model=attack_model,
-                train_loader=target_train_loader,  # Use regular loader, not MPC batch size
-                test_loader=target_test_loader,
+                train_loader=target_train_loader_mpc_eval,
+                test_loader=target_test_loader_mpc_eval,
                 device='cpu',  # Decrypted CrypTen models run on CPU
-                is_mpc=False,   # Key change: use plaintext inference path
+                is_mpc=True, 
                 verbose=verbose
             )
             
