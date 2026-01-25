@@ -15,7 +15,8 @@ from attack import (
     prepare_attack_dataset, 
     train_attack_model, 
     evaluate_mia_attack, 
-    evaluate_accuracy_loss
+    evaluate_accuracy_loss,
+    evaluate_accuracy_loss_mpc
 )
 from checkpointing import (
     check_plaintext_target_exists,
@@ -62,7 +63,7 @@ def run_experiment(cfg: ExperimentConfig, verbose: bool = True):
     
     target_train_loader_mpc_eval = DataLoader(target_train_subset, batch_size=cfg.mpc_batch_size, shuffle=False, num_workers=0)
     target_test_loader_mpc_eval = DataLoader(target_test_subset, batch_size=cfg.mpc_batch_size, shuffle=False, num_workers=0)
-
+    test_loader_mpc = DataLoader(test_dataset, batch_size=cfg.mpc_batch_size, shuffle=False, num_workers=cfg.num_workers)
     criterion = nn.CrossEntropyLoss()
 
     # Train plaintext targets, shadows, and attack models
@@ -228,7 +229,7 @@ def run_experiment(cfg: ExperimentConfig, verbose: bool = True):
             )
             
             # Evaluate test accuracy for MPC model
-            test_loss, test_acc = evaluate_accuracy_loss(target_model, test_loader, criterion, 'cpu', verbose=verbose)
+            test_loss, test_acc = evaluate_accuracy_loss_mpc(target_model, test_loader, criterion, 'cpu', verbose=verbose)
             print(f"Test Loss: {test_loss:.4f} | Test Acc: {test_acc:.2f}%")
             
             results[name] = {
@@ -240,7 +241,7 @@ def run_experiment(cfg: ExperimentConfig, verbose: bool = True):
             print(f"       Train PlainText{arch_key} first to generate the attack model.")
             
             # Still evaluate test accuracy
-            test_loss, test_acc = evaluate_accuracy_loss(target_model, test_loader, criterion, 'cpu', verbose=verbose)
+            test_loss, test_acc = evaluate_accuracy_loss_mpc(target_model, test_loader, criterion, 'cpu', verbose=verbose)
             print(f"Test Loss: {test_loss:.4f} | Test Acc: {test_acc:.2f}%")
             
             results[name] = {
