@@ -29,8 +29,8 @@ class EarlyStopping:
         return self.should_stop
 
 
-def plaintext_train_model(model, train_loader, num_epochs=10, lr=0.001, device='cuda', 
-                          save_dir=None, model_name='model', verbose=True, 
+def plaintext_train_model(model, train_loader, num_epochs=10, lr=0.001, weight_decay=1e-5,
+                          device='cuda', save_dir=None, model_name='model', verbose=True, 
                           patience=10, min_delta=0.001):
     """
     Train a plaintext PyTorch model with early stopping.
@@ -42,6 +42,7 @@ def plaintext_train_model(model, train_loader, num_epochs=10, lr=0.001, device='
         train_loader: Training data loader
         num_epochs: Maximum number of epochs
         lr: Learning rate
+        weight_decay: L2 regularization strength (lower = more overfitting)
         device: Training device
         save_dir: Directory to save checkpoints
         model_name: Name for checkpoint files
@@ -55,7 +56,7 @@ def plaintext_train_model(model, train_loader, num_epochs=10, lr=0.001, device='
         epochs_trained: Actual number of epochs trained (may be less due to early stopping)
     """
     model = model.to(device)
-    optimizer = t.optim.SGD(model.parameters(), lr=lr, momentum=0.9)
+    optimizer = t.optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=weight_decay)
     criterion = nn.CrossEntropyLoss()
     early_stopping = EarlyStopping(patience=patience, min_delta=min_delta)
 

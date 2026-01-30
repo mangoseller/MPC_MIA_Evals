@@ -1,7 +1,14 @@
 """Plaintext and MPC models with parameterized activation functions.
 Pass activation_fn for hidden layers, pass output_fn to 
-apply an activation after the final layer"""
+apply an activation after the final layer
 
+Note on MPC-compatible activations:
+- Sigmoid: Approximated via exponential + reciprocal (Newton-Raphson)
+- Tanh: Approximated via Chebyshev polynomials or 2*Sigmoid(2x) - 1
+- GELU: Approximated via 0.5x(1 + Tanh(sqrt(2/pi)(x + 0.044715x^3)))
+"""
+
+import math
 import torch.nn as nn
 import crypten.nn as cnn
 from functools import partial
@@ -111,8 +118,6 @@ class PlainTextLeNet(nn.Module):
     def forward(self, x):
         return self.network(x)
 
-# TODO: Investigate how these activation functions are being approximated exactly, and replace them where required
-
 class MpcFlatten(cnn.Module):
     def forward(self, x):
         return x.flatten(start_dim=1)
@@ -121,6 +126,22 @@ class MpcTanh(cnn.Module):
     # Wrapper for Tanh activation in CrypTen.
     def forward(self, x):
         return x.tanh()
+
+class MpcGELU(cnn.Module):
+
+    """
+    GELU activation for CrypTen using the tanh approximation,
+    GELU(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+    Approached follows MPCDIFF - (see MPCDIFF NDSS 2024, Appendix A)
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.sqrt_2_over_pi = math.sqrt(2.0 / math.pi)
+        self.coeff = 0.044715
+    
+    def forward(self, x):
+        return 0.5 * x * (1 + self.sqrt_2_over_pi * (x + self.coeff * x * x * x).tanh())
 
 class MpcCNN(cnn.Module):
 
@@ -233,23 +254,23 @@ class MpcLeNet(cnn.Module):
 MPC_MODELS = {
     'MpcCNN_Sigmoid': partial(MpcCNN, activation_fn=cnn.Sigmoid),
     'MpcCNN_Tanh': partial(MpcCNN, activation_fn=MpcTanh),
-    'MpcCNN_ReLU': partial(MpcCNN, activation_fn=cnn.ReLU),
+    'MpcCNN_GELU': partial(MpcCNN, activation_fn=MpcGELU),
     'MpcMLP_Sigmoid': partial(MpcMLP, activation_fn=cnn.Sigmoid),
     'MpcMLP_Tanh': partial(MpcMLP, activation_fn=MpcTanh),
-    'MpcMLP_ReLU': partial(MpcMLP, activation_fn=cnn.ReLU),
+    'MpcMLP_GELU': partial(MpcMLP, activation_fn=MpcGELU),
     'MpcLeNet_Sigmoid': partial(MpcLeNet, activation_fn=cnn.Sigmoid),
     'MpcLeNet_Tanh': partial(MpcLeNet, activation_fn=MpcTanh),
-    'MpcLeNet_ReLU': partial(MpcLeNet, activation_fn=cnn.ReLU),
+    'MpcLeNet_GELU': partial(MpcLeNet, activation_fn=MpcGELU),
 }
 
 PLAINTEXT_MODELS = {
     'PlainTextCNN_Sigmoid': partial(PlainTextCNN, activation_fn=nn.Sigmoid),
     'PlainTextCNN_Tanh': partial(PlainTextCNN, activation_fn=nn.Tanh),
-    'PlainTextCNN_ReLU': partial(PlainTextCNN, activation_fn=nn.ReLU),
+    'PlainTextCNN_GELU': partial(PlainTextCNN, activation_fn=nn.GELU),
     'PlainTextMLP_Sigmoid': partial(PlainTextMLP, activation_fn=nn.Sigmoid),
     'PlainTextMLP_Tanh': partial(PlainTextMLP, activation_fn=nn.Tanh),
-    'PlainTextMLP_ReLU': partial(PlainTextMLP, activation_fn=nn.ReLU),
+    'PlainTextMLP_GELU': partial(PlainTextMLP, activation_fn=nn.GELU),
     'PlainTextLeNet_Sigmoid': partial(PlainTextLeNet, activation_fn=nn.Sigmoid),
     'PlainTextLeNet_Tanh': partial(PlainTextLeNet, activation_fn=nn.Tanh),
-    'PlainTextLeNet_ReLU': partial(PlainTextLeNet, activation_fn=nn.ReLU),
+    'PlainTextLeNet_GELU': partial(PlainTextLeNet, activation_fn=nn.GELU),
 }

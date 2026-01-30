@@ -29,24 +29,25 @@ def setup_dirs(base_dir=None):
 
 @dataclass
 class ExperimentConfig:
-    cnn_epochs: int = 80
-    mlp_epochs: int = 120
-    lenet_epochs: int = 40
-    mpc_cnn_epochs: int = 80
-    mpc_mlp_epochs: int = 120
-    mpc_lenet_epochs: int = 40
+    cnn_epochs: int = 100
+    mlp_epochs: int = 150
+    lenet_epochs: int = 60
+    mpc_cnn_epochs: int = 100
+    mpc_mlp_epochs: int = 150
+    mpc_lenet_epochs: int = 60
     attack_epochs: int = 30
-    num_shadow_models: int = 9
-    target_train_size: int = 10000
+    num_shadow_models: int = 16  # Standard count in MIA literature 
+    target_train_size: int = 20000  # Increased from 10000
     batch_size: int = 128
     mpc_batch_size: int = 32
     learning_rate: float = 1e-2
+    weight_decay: float = 1e-5  # Light regularization - low value encourages overfitting
     shadow_pool_ratio: float = 0.5
     seed: int = 42
     num_workers: int = 2
     # Early stopping parameters (only for target models)
-    early_stopping_patience: int = 10
-    early_stopping_min_delta: float = 0.001
+    early_stopping_patience: int = 15
+    early_stopping_min_delta: float = 0.0005
     
     def get_plaintext_epochs(self, model_name: str) -> int:
         if 'CNN' in model_name:
@@ -76,7 +77,6 @@ class ExperimentConfig:
         return None
     
     def set_field(self, field_name: str, value_str: str) -> tuple[bool, str]:
-        # Set a field value from a string.
     
         if field_name not in self.get_field_names():
             return False, f"Setting '{field_name}' not found"
@@ -113,7 +113,7 @@ class ExperimentConfig:
             'MPC Training': ['mpc_cnn_epochs', 'mpc_mlp_epochs', 'mpc_lenet_epochs'],
             'Shadow & Attack': ['attack_epochs', 'num_shadow_models'],
             'Data': ['target_train_size', 'shadow_pool_ratio', 'seed'],
-            'Training': ['batch_size', 'mpc_batch_size', 'learning_rate', 'num_workers'],
+            'Training': ['batch_size', 'mpc_batch_size', 'learning_rate', 'weight_decay', 'num_workers'],
             'Early Stopping (Target Only)': ['early_stopping_patience', 'early_stopping_min_delta'],
         }
         

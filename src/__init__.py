@@ -1,7 +1,8 @@
+
 from config import ExperimentConfig, setup_dirs
 from models import (
     PlainTextCNN, PlainTextMLP, PlainTextLeNet,
-    MpcCNN, MpcMLP, MpcLeNet, MpcFlatten, MpcTanh,
+    MpcCNN, MpcMLP, MpcLeNet, MpcFlatten, MpcTanh, MpcGELU,
     PLAINTEXT_MODELS, MPC_MODELS
 )
 from training import plaintext_train_model, mpc_train_model, mpc_train_epoch, EarlyStopping
@@ -33,7 +34,7 @@ __all__ = [
     'setup_dirs',
     
     'PlainTextCNN', 'PlainTextMLP', 'PlainTextLeNet',
-    'MpcCNN', 'MpcMLP', 'MpcLeNet', 'MpcFlatten', 'MpcTanh',
+    'MpcCNN', 'MpcMLP', 'MpcLeNet', 'MpcFlatten', 'MpcTanh', 'MpcGELU',
     'PLAINTEXT_MODELS', 'MPC_MODELS',
     
     'plaintext_train_model', 'mpc_train_model', 'mpc_train_epoch', 'EarlyStopping',
