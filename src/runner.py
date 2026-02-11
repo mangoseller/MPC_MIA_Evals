@@ -38,6 +38,7 @@ from checkpointing import (
     check_mpc_target_exists,
     check_shadow_models_exist,
     check_attack_model_exists,
+    find_latest_intermediate_checkpoint,
     load_plaintext_model,
     load_mpc_model,
     load_shadow_models,
@@ -124,14 +125,32 @@ def run_experiment(cfg: ExperimentConfig, verbose: bool = True):
         
         num_epochs = cfg.get_plaintext_epochs(name)
         target_exists, target_path = check_plaintext_target_exists(name, DIRS)
-        
+
         if target_exists:
             print(f"  [SKIP] Loading from: {target_path}")
             model = load_plaintext_model(model_class, target_path, device)
             epochs_trained = extract_epochs_from_checkpoint(target_path) or num_epochs
         else:
-            print(f"  [TRAIN] Training for {num_epochs} epochs...")
+            # Check for intermediate checkpoint to resume from
+            resume_found, resume_path, resume_epoch = find_latest_intermediate_checkpoint(name, DIRS['plaintext'])
+
             model = model_class(num_classes=10).to(device)
+            start_epoch = 0
+            resume_optimizer_state = None
+
+            if resume_found:
+                print(f"  [RESUME] Resuming from epoch {resume_epoch}: {resume_path}")
+                checkpoint_data = t.load(resume_path, map_location=device)
+                if isinstance(checkpoint_data, dict) and 'model_state_dict' in checkpoint_data:
+                    model.load_state_dict(checkpoint_data['model_state_dict'])
+                    resume_optimizer_state = checkpoint_data.get('optimizer_state_dict')
+                else:
+                    # Old format: raw state_dict
+                    model.load_state_dict(checkpoint_data)
+                start_epoch = resume_epoch
+            else:
+                print(f"  [TRAIN] Training for {num_epochs} epochs...")
+
             model, _, epochs_trained = plaintext_train_model(
                 model, target_train_loader, num_epochs,
                 lr=cfg.learning_rate,
@@ -141,7 +160,9 @@ def run_experiment(cfg: ExperimentConfig, verbose: bool = True):
                 model_name=name,
                 verbose=verbose,
                 patience=cfg.early_stopping_patience,
-                min_delta=cfg.early_stopping_min_delta
+                min_delta=cfg.early_stopping_min_delta,
+                start_epoch=start_epoch,
+                resume_optimizer_state=resume_optimizer_state
             )
         
         plaintext_models[name] = model
@@ -227,14 +248,26 @@ def run_experiment(cfg: ExperimentConfig, verbose: bool = True):
         
         num_epochs = cfg.get_mpc_epochs(name)
         mpc_exists, mpc_path = check_mpc_target_exists(name, DIRS)
-        
+
         if mpc_exists:
             print(f"  [SKIP] Loading from: {mpc_path}")
             model = load_mpc_model(model_class, mpc_path)
             epochs_trained = extract_epochs_from_checkpoint(mpc_path) or num_epochs
         else:
-            print(f"  [TRAIN] Training for {num_epochs} epochs...")
+            # Check for intermediate checkpoint to resume from
+            resume_found, resume_path, resume_epoch = find_latest_intermediate_checkpoint(name, DIRS['MPC'])
+
             model = model_class(num_classes=10)
+            start_epoch = 0
+            mpc_resume_path = None
+
+            if resume_found:
+                print(f"  [RESUME] Resuming from epoch {resume_epoch}: {resume_path}")
+                start_epoch = resume_epoch
+                mpc_resume_path = resume_path
+            else:
+                print(f"  [TRAIN] Training for {num_epochs} epochs...")
+
             model, _, epochs_trained = mpc_train_model(
                 model, target_train_loader_mpc, num_epochs,
                 lr=cfg.learning_rate,
@@ -242,7 +275,9 @@ def run_experiment(cfg: ExperimentConfig, verbose: bool = True):
                 checkpoint_dir=DIRS['MPC'],
                 verbose=verbose,
                 patience=cfg.early_stopping_patience,
-                min_delta=cfg.early_stopping_min_delta
+                min_delta=cfg.early_stopping_min_delta,
+                start_epoch=start_epoch,
+                resume_path=mpc_resume_path
             )
         
         # Ensure model is decrypted for later evaluation

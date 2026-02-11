@@ -42,6 +42,47 @@ def check_mpc_target_exists(name, dirs):
     return False, None
 
 
+def find_latest_intermediate_checkpoint(name, checkpoint_dir):
+    """
+    Find the latest intermediate (non-final) checkpoint for a model.
+
+    Searches for checkpoint files matching {name}_epoch{N}.pt (excluding _final.pt)
+    and returns the one with the highest epoch number.
+
+    Args:
+        name: Model name (e.g., 'PlainTextCNN_Sigmoid')
+        checkpoint_dir: Directory containing checkpoints
+
+    Returns:
+        (found: bool, path: str or None, epoch: int or None)
+    """
+    pattern = os.path.join(checkpoint_dir, f"{name}_epoch*.pt")
+    all_checkpoints = glob.glob(pattern)
+
+    # Filter out final checkpoints
+    intermediate = [p for p in all_checkpoints if not p.endswith('_final.pt')]
+
+    if not intermediate:
+        return False, None, None
+
+    # Extract epochs and find the latest
+    best_epoch = -1
+    best_path = None
+    for path in intermediate:
+        filename = os.path.basename(path)
+        match = re.search(r'_epoch(\d+)\.pt$', filename)
+        if match:
+            epoch = int(match.group(1))
+            if epoch > best_epoch:
+                best_epoch = epoch
+                best_path = path
+
+    if best_path is not None:
+        return True, best_path, best_epoch
+
+    return False, None, None
+
+
 def check_shadow_models_exist(name, dirs, num_shadows):
     shadow_dir = os.path.join(dirs['shadow_models'], name)
     if not os.path.exists(shadow_dir):

@@ -30,13 +30,14 @@ class EarlyStopping:
 
 
 def plaintext_train_model(model, train_loader, num_epochs=10, lr=0.001, weight_decay=1e-5,
-                          device='cuda', save_dir=None, model_name='model', verbose=True, 
-                          patience=10, min_delta=0.001):
+                          device='cuda', save_dir=None, model_name='model', verbose=True,
+                          patience=10, min_delta=0.001, start_epoch=0,
+                          resume_optimizer_state=None):
     """
     Train a plaintext PyTorch model with early stopping.
-    
+
     Saves intermediate checkpoints and a final checkpoint with _final.pt suffix.
-    
+
     Args:
         model: PyTorch model to train
         train_loader: Training data loader
@@ -49,7 +50,10 @@ def plaintext_train_model(model, train_loader, num_epochs=10, lr=0.001, weight_d
         verbose: Whether to show progress
         patience: Early stopping patience
         min_delta: Early stopping minimum delta
-    
+        start_epoch: Epoch to resume from (0 = train from scratch). When resuming,
+                     model weights should already be loaded before calling this function.
+        resume_optimizer_state: Optimizer state dict to restore when resuming
+
     Returns:
         model: Trained model
         history: Training history dict
@@ -59,6 +63,10 @@ def plaintext_train_model(model, train_loader, num_epochs=10, lr=0.001, weight_d
     optimizer = t.optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=weight_decay)
     criterion = nn.CrossEntropyLoss()
     early_stopping = EarlyStopping(patience=patience, min_delta=min_delta)
+
+    # Restore optimizer state when resuming from checkpoint
+    if resume_optimizer_state is not None:
+        optimizer.load_state_dict(resume_optimizer_state)
 
     history = {
         'train_loss': [],
@@ -73,9 +81,10 @@ def plaintext_train_model(model, train_loader, num_epochs=10, lr=0.001, weight_d
     checkpoint_epochs = set(range(checkpoint_interval, num_epochs + 1, checkpoint_interval))
     checkpoint_epochs.add(num_epochs)
 
-    epochs_trained = 0
-    epoch_iter = tqdm(range(num_epochs), desc="Training", disable=not verbose)
-    
+    epochs_trained = start_epoch
+    desc = f"Training (from epoch {start_epoch})" if start_epoch > 0 else "Training"
+    epoch_iter = tqdm(range(start_epoch, num_epochs), desc=desc, disable=not verbose)
+
     for epoch in epoch_iter:
         model.train()
         running_loss = 0.0
@@ -98,27 +107,31 @@ def plaintext_train_model(model, train_loader, num_epochs=10, lr=0.001, weight_d
 
         avg_loss = running_loss / len(train_loader)
         accuracy = 100.0 * correct / total
-        
+
         history['train_loss'].append(avg_loss)
         history['train_acc'].append(accuracy)
         epochs_trained = epoch + 1
 
         epoch_iter.set_postfix(loss=f"{avg_loss:.4f}", acc=f"{accuracy:.2f}%")
-        
-        # Save intermediate checkpoint
+
+        # Save intermediate checkpoint (includes optimizer state for resume support)
         current_epoch = epoch + 1
         if save_dir and current_epoch in checkpoint_epochs:
             checkpoint_path = os.path.join(save_dir, f"{model_name}_epoch{current_epoch}.pt")
-            t.save(model.state_dict(), checkpoint_path)
+            t.save({
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'epoch': current_epoch,
+            }, checkpoint_path)
             if verbose:
                 tqdm.write(f"Checkpoint saved at epoch {current_epoch}")
-        
+
         # Check early stopping
         if early_stopping(avg_loss):
             tqdm.write(f"Early stopping triggered at epoch {epoch + 1}")
             break
 
-    # Save final checkpoint with _final.pt suffix
+    # Save final checkpoint with _final.pt suffix (model state only for inference)
     if save_dir:
         final_path = os.path.join(save_dir, f"{model_name}_epoch{epochs_trained}_final.pt")
         t.save(model.state_dict(), final_path)
@@ -166,12 +179,26 @@ def mpc_train_epoch(model, train_loader, optimizer, criterion, device, num_class
     return avg_loss, accuracy
     
 
-def mpc_train_model(model, train_loader, num_epochs=10, lr=0.001, device='cpu', 
+def mpc_train_model(model, train_loader, num_epochs=10, lr=0.001, device='cpu',
                     model_name='MpcModel', checkpoint_dir='./Checkpoints/MPC', verbose=True,
-                    patience=10, min_delta=0.001):
+                    patience=10, min_delta=0.001, start_epoch=0, resume_path=None):
     """
     Train an MPC model with early stopping.
-    
+
+    Args:
+        model: MPC model to train (unencrypted)
+        train_loader: Training data loader
+        num_epochs: Maximum number of epochs
+        lr: Learning rate
+        device: Training device
+        model_name: Name for checkpoint files
+        checkpoint_dir: Directory to save checkpoints
+        verbose: Whether to show progress
+        patience: Early stopping patience
+        min_delta: Early stopping minimum delta
+        start_epoch: Epoch to resume from (0 = train from scratch)
+        resume_path: Path to intermediate checkpoint to load after encryption
+
     Returns:
         model: Trained model
         history: Training history dict
@@ -179,10 +206,16 @@ def mpc_train_model(model, train_loader, num_epochs=10, lr=0.001, device='cpu',
     """
     if not crypten.is_initialized():
         crypten.init()
-    
+
     os.makedirs(checkpoint_dir, exist_ok=True)
-    
+
     model.encrypt()
+
+    # Load checkpoint state into encrypted model when resuming
+    if resume_path is not None:
+        state_dict = crypten.load(resume_path)
+        model.load_state_dict(state_dict)
+
     model.train()
 
     optimizer = crypten.optim.SGD(model.parameters(), lr=lr, momentum=0.9)
@@ -204,9 +237,10 @@ def mpc_train_model(model, train_loader, num_epochs=10, lr=0.001, device='cpu',
         tqdm.write(f"Checkpoints stored at epochs: {sorted(checkpoint_epochs)}")
     start_time = time.time()
 
-    epochs_trained = 0
-    epoch_iter = tqdm(range(num_epochs), desc="MPC Training", disable=not verbose)
-    
+    epochs_trained = start_epoch
+    desc = f"MPC Training (from epoch {start_epoch})" if start_epoch > 0 else "MPC Training"
+    epoch_iter = tqdm(range(start_epoch, num_epochs), desc=desc, disable=not verbose)
+
     for epoch in epoch_iter:
         train_loss, train_acc = mpc_train_epoch(
             model, 
