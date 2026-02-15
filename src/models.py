@@ -128,11 +128,17 @@ class MpcTanh(cnn.Module):
         return x.tanh()
 
 class MpcGELU(cnn.Module):
-
     """
-    GELU activation for CrypTen using the tanh approximation,
-    GELU(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
-    Approached follows MPCDIFF - (see MPCDIFF NDSS 2024, Appendix A)
+    GELU activation for CrypTen using the tanh approximation:
+    GELU(x) = 0.5 * x * (1 + tanh( sqrt(2/pi) * (x + 0.044715 * x^3) ))
+    
+    CRITICAL: sqrt(2/pi) must be INSIDE the tanh argument. Placing it
+    outside removes the dampening that keeps the argument in the range
+    where CrypTen's Chebyshev polynomial approximation of tanh is accurate.
+    Without dampening, large inputs cause the polynomial to diverge,
+    producing catastrophic numerical blowup (loss in the millions).
+    
+    Approach follows MPCDIFF (NDSS 2024, Appendix A).
     """
 
     def __init__(self):
@@ -141,7 +147,9 @@ class MpcGELU(cnn.Module):
         self.coeff = 0.044715
     
     def forward(self, x):
-        return 0.5 * x * (1 + self.sqrt_2_over_pi * (x + self.coeff * x * x * x).tanh())
+        # sqrt(2/pi) MUST multiply the inner expression BEFORE tanh
+        inner = self.sqrt_2_over_pi * (x + self.coeff * x * x * x)
+        return 0.5 * x * (1.0 + inner.tanh())
 
 class MpcCNN(cnn.Module):
 
@@ -274,3 +282,20 @@ PLAINTEXT_MODELS = {
     'PlainTextLeNet_Tanh': partial(PlainTextLeNet, activation_fn=nn.Tanh),
     'PlainTextLeNet_GELU': partial(PlainTextLeNet, activation_fn=nn.GELU),
 }
+
+# Maps each plaintext model name to its MPC counterpart constructor
+PLAINTEXT_TO_MPC = {
+    'PlainTextCNN_Sigmoid':  MPC_MODELS['MpcCNN_Sigmoid'],
+    'PlainTextCNN_Tanh':     MPC_MODELS['MpcCNN_Tanh'],
+    'PlainTextCNN_GELU':     MPC_MODELS['MpcCNN_GELU'],
+    'PlainTextMLP_Sigmoid':  MPC_MODELS['MpcMLP_Sigmoid'],
+    'PlainTextMLP_Tanh':     MPC_MODELS['MpcMLP_Tanh'],
+    'PlainTextMLP_GELU':     MPC_MODELS['MpcMLP_GELU'],
+    'PlainTextLeNet_Sigmoid': MPC_MODELS['MpcLeNet_Sigmoid'],
+    'PlainTextLeNet_Tanh':    MPC_MODELS['MpcLeNet_Tanh'],
+    'PlainTextLeNet_GELU':    MPC_MODELS['MpcLeNet_GELU'],
+}
+
+def mpc_name_from_plaintext(plaintext_name: str) -> str:
+    """Convert 'PlainTextCNN_Sigmoid' -> 'MpcCNN_Sigmoid'."""
+    return plaintext_name.replace('PlainText', 'Mpc')

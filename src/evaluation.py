@@ -1,7 +1,15 @@
+"""
+Unified evaluation — accuracy + basic MIA + LiRA, with ROC metrics.
+
+Every evaluation function returns raw scores alongside summary metrics so
+the chart module can render ROC curves across seeds.
+"""
+
 import json
 import os
 from datetime import datetime
 from typing import Optional
+import numpy as np
 import torch as t
 import torch.nn as nn
 import torch.nn.functional as F
@@ -10,435 +18,395 @@ import crypten
 from tqdm import tqdm
 import gc
 
-def evaluate_accuracy(model, data_loader, criterion, device, verbose=True) -> tuple[float, float]:
+from sklearn.metrics import roc_curve, roc_auc_score
 
+from lira import evaluate_lira
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ROC utilities
+# ═══════════════════════════════════════════════════════════════════════════
+
+def compute_roc_metrics(scores: np.ndarray, labels: np.ndarray) -> dict:
+    """Compute ROC curve and TPR at fixed low-FPR thresholds."""
+    if len(np.unique(labels)) < 2:
+        return {"auc": 0.5, "tpr_at_01pct_fpr": 0.0, "tpr_at_1pct_fpr": 0.0,
+                "tpr_at_10pct_fpr": 0.0, "fpr": [0, 1], "tpr": [0, 1]}
+
+    fpr, tpr, _ = roc_curve(labels, scores)
+    auc = float(roc_auc_score(labels, scores))
+
+    return {
+        "auc": auc,
+        "tpr_at_01pct_fpr": float(np.interp(0.001, fpr, tpr)),
+        "tpr_at_1pct_fpr":  float(np.interp(0.01,  fpr, tpr)),
+        "tpr_at_10pct_fpr": float(np.interp(0.10,  fpr, tpr)),
+        "fpr": fpr.tolist(),
+        "tpr": tpr.tolist(),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Accuracy
+# ═══════════════════════════════════════════════════════════════════════════
+
+def evaluate_accuracy(model, loader, criterion, device, verbose=True):
     model.eval()
-    running_loss = 0.0
-    correct = 0
-    total = 0
-
-    loader_iter = tqdm(data_loader, desc="Evaluating", leave=False, disable=not verbose)
+    loss_sum = correct = total = 0
     with t.no_grad():
-        for inputs, targets in loader_iter:
-            inputs, targets = inputs.to(device), targets.to(device)
-            outputs = model(inputs)
-            loss = criterion(outputs, targets)
-
-            running_loss += loss.item()
-            predictions = outputs.argmax(dim=1)
-            correct += (predictions == targets).sum().item()
-            total += targets.size(0)
-
-    avg_loss = running_loss / len(data_loader)
-    accuracy = 100.0 * correct / total
-
-    return avg_loss, accuracy
+        for x, y in tqdm(loader, desc="Eval", leave=False, disable=not verbose):
+            x, y = x.to(device), y.to(device)
+            out = model(x)
+            loss_sum += criterion(out, y).item()
+            correct += (out.argmax(1) == y).sum().item()
+            total += y.size(0)
+    return loss_sum / len(loader), 100.0 * correct / total
 
 
-def evaluate_accuracy_mpc(model, data_loader, criterion, verbose=True) -> tuple[float, float]:
-
-    running_loss = 0.0
-    correct = 0
-    total = 0
-
-    was_encrypted = getattr(model, 'encrypted', False)
-    if not was_encrypted:
+def evaluate_accuracy_mpc(model, loader, criterion, verbose=True):
+    loss_sum = correct = total = 0
+    was_enc = getattr(model, "encrypted", False)
+    if not was_enc:
         model.encrypt()
 
-    loader_iter = tqdm(data_loader, desc="Evaluating MPC", leave=False, disable=not verbose)
-    for inputs, targets in loader_iter:
-        x_enc = crypten.cryptensor(inputs)
-        
+    for x, y in tqdm(loader, desc="Eval MPC", leave=False, disable=not verbose):
+        x_enc = crypten.cryptensor(x)
         with t.no_grad():
-            output_enc = model(x_enc)
-            outputs = output_enc.get_plain_text()
-        
-        loss = criterion(outputs, targets)
-        running_loss += loss.item()
-        
-        predictions = outputs.argmax(dim=1)
-        correct += (predictions == targets).sum().item()
-        total += targets.size(0)
+            out = model(x_enc).get_plain_text()
+        loss_sum += criterion(out, y).item()
+        correct += (out.argmax(1) == y).sum().item()
+        total += y.size(0)
 
-    if not was_encrypted:
+    if not was_enc:
         model.decrypt()
-
-    avg_loss = running_loss / len(data_loader)
-    accuracy = 100.0 * correct / total
-
-    return avg_loss, accuracy
+    return loss_sum / len(loader), 100.0 * correct / total
 
 
-def evaluate_mia(
-    target_model, 
-    attack_model, 
-    train_loader, 
-    test_loader, 
-    device, 
-    is_mpc=False, 
-    verbose=True
-) -> tuple[float, float, float]:
+# ═══════════════════════════════════════════════════════════════════════════
+# Basic MIA  (returns raw scores for ROC)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def evaluate_mia(target_model, attack_model, train_loader, test_loader,
+                 device, is_mpc=False, verbose=True) -> dict:
     """
-    Evaluate MIA attack effectiveness.
-    
-    Args:
-        target_model: The model being attacked
-        attack_model: The trained attack model
-        train_loader: DataLoader for member samples (training data)
-        test_loader: DataLoader for non-member samples (test data)
-        device: Device for computation
-        is_mpc: Whether target_model is an MPC model
-        verbose: Show progress bars
-    
-    Returns:
-        (accuracy, precision, recall)
+    Returns dict with accuracy/precision/recall/ROC metrics AND raw_scores/raw_labels.
     """
     if not is_mpc:
         target_model.eval()
-    attack_model.eval()
-    
-    def get_predictions(loader, is_member, desc=""):
-        preds = []
-        labels = []
 
-        was_decrypted = False
-        if is_mpc and hasattr(target_model, 'encrypted') and not target_model.encrypted:
+    atk_orig_dev = next(attack_model.parameters()).device
+    attack_model = attack_model.to(device)
+    attack_model.eval()
+
+    def _preds(loader, is_member, desc=""):
+        preds, labels = [], []
+        if is_mpc and hasattr(target_model, "encrypted") and not target_model.encrypted:
             target_model.encrypt()
-            was_decrypted = True
-        
-        loader_iter = tqdm(loader, desc=desc, leave=False, disable=not verbose)
-        for inputs, _ in loader_iter:
+        for inputs, _ in tqdm(loader, desc=desc, leave=False, disable=not verbose):
             if is_mpc:
                 with t.no_grad():
-                    x_input = crypten.cryptensor(inputs)
-                    output_enc = target_model(x_input)
-                    batch_preds = F.softmax(output_enc.get_plain_text(), dim=1)
-                    del x_input, output_enc
+                    xe = crypten.cryptensor(inputs)
+                    bp = F.softmax(target_model(xe).get_plain_text(), dim=1)
+                    del xe
                 gc.collect()
             else:
                 inputs = inputs.to(device)
                 with t.no_grad():
-                    outputs = target_model(inputs)
-                    batch_preds = F.softmax(outputs, dim=1)
-            
-            preds.append(batch_preds.cpu())
+                    bp = F.softmax(target_model(inputs), dim=1)
+            preds.append(bp.cpu())
             labels.extend([1.0 if is_member else 0.0] * inputs.size(0))
-            
         return t.cat(preds), t.tensor(labels).unsqueeze(1)
-    
-    member_preds, member_labels = get_predictions(train_loader, is_member=True, desc="Members")
-    non_member_preds, non_member_labels = get_predictions(test_loader, is_member=False, desc="Non-members")
-    
-    all_preds = t.cat([member_preds, non_member_preds])
-    all_labels = t.cat([member_labels, non_member_labels])
-    
+
+    mp, ml = _preds(train_loader, True, "Members")
+    nmp, nml = _preds(test_loader, False, "Non-members")
+    all_preds = t.cat([mp, nmp])
+    all_labels = t.cat([ml, nml])
+
     with t.no_grad():
-        attack_probs = attack_model(all_preds.to(device))
-        attack_preds = (attack_probs > 0.5).float().cpu()
-        
-    correct = (attack_preds == all_labels).sum().item()
-    accuracy = 100.0 * correct / all_labels.size(0)
-    
-    true_positives = ((attack_preds == 1) & (all_labels == 1)).sum().item()
-    false_positives = ((attack_preds == 1) & (all_labels == 0)).sum().item()
-    false_negatives = ((attack_preds == 0) & (all_labels == 1)).sum().item()
-    
-    precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0.0
-    recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0.0
-    
-    return accuracy, precision, recall
+        attack_probs = attack_model(all_preds.to(device)).cpu().numpy().squeeze()
+
+    labels_np = all_labels.numpy().squeeze()
+
+    binary_preds = (attack_probs > 0.5).astype(float)
+    accuracy = 100.0 * (binary_preds == labels_np).sum() / len(labels_np)
+    tp = ((binary_preds == 1) & (labels_np == 1)).sum()
+    fp = ((binary_preds == 1) & (labels_np == 0)).sum()
+    fn = ((binary_preds == 0) & (labels_np == 1)).sum()
+    precision = float(tp / (tp + fp)) if (tp + fp) > 0 else 0.0
+    recall = float(tp / (tp + fn)) if (tp + fn) > 0 else 0.0
+
+    roc = compute_roc_metrics(attack_probs, labels_np)
+
+    attack_model.to(atk_orig_dev)
+
+    return {
+        "accuracy": float(accuracy),
+        "precision": precision,
+        "recall": recall,
+        **{f"roc_{k}": v for k, v in roc.items()},      # roc_auc, roc_tpr_at_1pct_fpr, ...
+        "raw_scores": attack_probs,   # ndarray – stripped before JSON
+        "raw_labels": labels_np,      # ndarray – stripped before JSON
+    }
 
 
-def evaluate_single_plaintext_model(
-    name: str,
-    model,
-    attack_model,
-    test_loader: DataLoader,
-    train_loader_eval: DataLoader,
-    test_loader_eval: DataLoader,
-    criterion,
-    device: str,
-    verbose: bool = True
+# ═══════════════════════════════════════════════════════════════════════════
+# Single-model evaluation
+# ═══════════════════════════════════════════════════════════════════════════
+
+def evaluate_single_plaintext(
+    name, model, attack_model, lira_params,
+    test_loader, train_loader_eval, test_loader_eval,
+    criterion, device, verbose=True,
 ) -> dict:
-    """
-    Fully evaluate a single plaintext model.
-    
-    Returns:
-        Dictionary with all evaluation metrics
-    """
-    print(f"\n[EVAL] Evaluating {name}...")
-    
-    # Test accuracy
+    print(f"\n[EVAL] {name}")
+
     test_loss, test_acc = evaluate_accuracy(model, test_loader, criterion, device, verbose)
-    print(f"  Test Loss: {test_loss:.4f} | Test Acc: {test_acc:.2f}%")
-    
-    # Training accuracy (for overfitting measurement)
     train_loss, train_acc = evaluate_accuracy(model, train_loader_eval, criterion, device, verbose)
-    print(f"  Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}%")
-    
-    overfit_gap = train_acc - test_acc
-    print(f"  Overfitting gap: {overfit_gap:.2f}%")
-    
-    # MIA evaluation
-    mia_acc, mia_prec, mia_rec = evaluate_mia(
-        target_model=model,
-        attack_model=attack_model,
-        train_loader=train_loader_eval,
-        test_loader=test_loader_eval,
-        device=device,
-        is_mpc=False,
-        verbose=verbose
-    )
-    print(f"  MIA Acc: {mia_acc:.2f}% | Precision: {mia_prec:.4f} | Recall: {mia_rec:.4f}")
-    
-    return {
-        'model_name': name,
-        'test_loss': test_loss,
-        'test_accuracy': test_acc,
-        'train_loss': train_loss,
-        'train_accuracy': train_acc,
-        'overfit_gap': overfit_gap,
-        'mia_accuracy': mia_acc,
-        'mia_precision': mia_prec,
-        'mia_recall': mia_rec,
-        'is_mpc': False
-    }
+    overfit = train_acc - test_acc
+    print(f"  Test {test_acc:.2f}% | Train {train_acc:.2f}% | Gap {overfit:+.2f}%")
+
+    basic = evaluate_mia(model, attack_model, train_loader_eval, test_loader_eval,
+                         device, is_mpc=False, verbose=verbose)
+    print(f"  Basic MIA  Acc {basic['accuracy']:.2f}% AUC {basic['roc_auc']:.4f} "
+          f"TPR@1%FPR {basic['roc_tpr_at_1pct_fpr']:.4f}")
+
+    lira = evaluate_lira(model, lira_params, train_loader_eval, test_loader_eval,
+                         device, is_mpc=False, verbose=verbose)
+    lira_roc = compute_roc_metrics(lira["raw_scores"], lira["raw_labels"])
+    print(f"  LiRA       Acc {lira['accuracy']:.2f}% AUC {lira_roc['auc']:.4f} "
+          f"TPR@1%FPR {lira_roc['tpr_at_1pct_fpr']:.4f}")
+
+    return _build_result(name, False,
+                         test_loss, test_acc, train_loss, train_acc, overfit,
+                         basic, lira, lira_roc)
 
 
-def evaluate_single_mpc_model(
-    name: str,
-    model,
-    attack_model,
-    test_loader_mpc: DataLoader,
-    train_loader_mpc_eval: DataLoader,
-    test_loader_mpc_eval: DataLoader,
-    criterion,
-    device: str,
-    verbose: bool = True
+def evaluate_single_mpc(
+    name, model, attack_model, lira_params,
+    test_loader_mpc, train_loader_mpc, test_loader_mpc_eval,
+    criterion, device, verbose=True,
 ) -> dict:
-    """
-    Fully evaluate a single MPC model.
-    
-    Returns:
-        Dictionary with all evaluation metrics, or partial results if no attack model
-    """
-    print(f"\n[EVAL] Evaluating {name}...")
-    
-    # Test accuracy
+    print(f"\n[EVAL] {name}")
+
     test_loss, test_acc = evaluate_accuracy_mpc(model, test_loader_mpc, criterion, verbose)
-    print(f"  Test Loss: {test_loss:.4f} | Test Acc: {test_acc:.2f}%")
-    
-    if attack_model is None:
-        print(f"  [WARN] No attack model available, skipping MIA evaluation")
-        return {
-            'model_name': name,
-            'test_loss': test_loss,
-            'test_accuracy': test_acc,
-            'train_loss': None,
-            'train_accuracy': None,
-            'overfit_gap': None,
-            'mia_accuracy': None,
-            'mia_precision': None,
-            'mia_recall': None,
-            'is_mpc': True
-        }
-    
-    # MIA evaluation
-    mia_acc, mia_prec, mia_rec = evaluate_mia(
-        target_model=model,
-        attack_model=attack_model,
-        train_loader=train_loader_mpc_eval,
-        test_loader=test_loader_mpc_eval,
-        device=device,  # MPC models use CPU after decryption
-        is_mpc=True,
-        verbose=verbose
-    )
-    print(f"  MIA Acc: {mia_acc:.2f}% | Precision: {mia_prec:.4f} | Recall: {mia_rec:.4f}")
-    
+    print(f"  Test {test_acc:.2f}%")
+
+    basic = evaluate_mia(model, attack_model, train_loader_mpc, test_loader_mpc_eval,
+                         device="cpu", is_mpc=True, verbose=verbose)
+    print(f"  Basic MIA  Acc {basic['accuracy']:.2f}% AUC {basic['roc_auc']:.4f} "
+          f"TPR@1%FPR {basic['roc_tpr_at_1pct_fpr']:.4f}")
+
+    lira = evaluate_lira(model, lira_params, train_loader_mpc, test_loader_mpc_eval,
+                         device="cpu", is_mpc=True, verbose=verbose)
+    lira_roc = compute_roc_metrics(lira["raw_scores"], lira["raw_labels"])
+    print(f"  LiRA       Acc {lira['accuracy']:.2f}% AUC {lira_roc['auc']:.4f} "
+          f"TPR@1%FPR {lira_roc['tpr_at_1pct_fpr']:.4f}")
+
+    return _build_result(name, True,
+                         test_loss, test_acc, None, None, None,
+                         basic, lira, lira_roc)
+
+
+def _build_result(name, is_mpc, test_loss, test_acc, train_loss, train_acc, overfit,
+                  basic, lira, lira_roc):
+    """Assemble the result dict from sub-dicts."""
     return {
-        'model_name': name,
-        'test_loss': test_loss,
-        'test_accuracy': test_acc,
-        'train_loss': None,
-        'train_accuracy': None,
-        'overfit_gap': None,
-        'mia_accuracy': mia_acc,
-        'mia_precision': mia_prec,
-        'mia_recall': mia_rec,
-        'is_mpc': True
+        "model_name": name, "is_mpc": is_mpc,
+        "test_loss": test_loss, "test_accuracy": test_acc,
+        "train_loss": train_loss, "train_accuracy": train_acc, "overfit_gap": overfit,
+        # Basic MIA
+        "basic_mia_accuracy":   basic["accuracy"],
+        "basic_mia_precision":  basic["precision"],
+        "basic_mia_recall":     basic["recall"],
+        "basic_mia_auc":        basic["roc_auc"],
+        "basic_tpr_at_01pct_fpr": basic["roc_tpr_at_01pct_fpr"],
+        "basic_tpr_at_1pct_fpr":  basic["roc_tpr_at_1pct_fpr"],
+        "basic_tpr_at_10pct_fpr": basic["roc_tpr_at_10pct_fpr"],
+        # LiRA
+        "lira_accuracy":   lira["accuracy"],
+        "lira_precision":  lira["precision"],
+        "lira_recall":     lira["recall"],
+        "lira_auc":        lira_roc["auc"],
+        "lira_tpr_at_01pct_fpr": lira_roc["tpr_at_01pct_fpr"],
+        "lira_tpr_at_1pct_fpr":  lira_roc["tpr_at_1pct_fpr"],
+        "lira_tpr_at_10pct_fpr": lira_roc["tpr_at_10pct_fpr"],
+        # Raw scores for ROC curves (stripped before JSON serialization)
+        "_basic_raw_scores": basic["raw_scores"],
+        "_basic_raw_labels": basic["raw_labels"],
+        "_lira_raw_scores":  lira["raw_scores"],
+        "_lira_raw_labels":  lira["raw_labels"],
     }
 
 
-def evaluate_all_plaintext_models(
-    models: dict,
-    attack_models: dict,
-    test_loader: DataLoader,
-    train_loader_eval: DataLoader,
-    test_loader_eval: DataLoader,
-    criterion,
-    device: str,
-    verbose: bool = True
-) -> dict:
-    """
-    Evaluate all plaintext models.
-    
-    Args:
-        models: Dict of {name: model}
-        attack_models: Dict of {arch_key: attack_model}
-        test_loader: Test data loader
-        train_loader_eval: Training data loader (non-augmented) for MIA
-        test_loader_eval: Test data loader for MIA (from training split)
-        criterion: Loss function
-        device: Computation device
-        verbose: Show progress
-    
-    Returns:
-        Dict of {model_name: results_dict}
-    """
-    print("\n" + "=" * 60)
-    print("EVALUATING PLAINTEXT MODELS")
-    print("=" * 60)
-    
+# ═══════════════════════════════════════════════════════════════════════════
+# Batch evaluation
+# ═══════════════════════════════════════════════════════════════════════════
+
+def evaluate_all_plaintext(
+    models, attack_models, lira_params_all,
+    test_loader, train_eval, test_eval,
+    criterion, device, verbose=True,
+):
+    print("\n" + "=" * 60 + "\nEVALUATING PLAINTEXT MODELS\n" + "=" * 60)
     results = {}
-    
-    for name, model in tqdm(models.items(), desc="Plaintext Evaluation", disable=not verbose):
-        arch_key = name.replace('PlainText', '')
-        attack_model = attack_models.get(arch_key)
-        
-        if attack_model is None:
-            print(f"[WARN] No attack model for {name}, skipping...")
+    for name, model in tqdm(models.items(), desc="Plaintext", disable=not verbose):
+        arch = name.replace("PlainText", "")
+        atk = attack_models.get(arch)
+        lp = lira_params_all.get(arch)
+        if atk is None:
+            print(f"[WARN] No attack model for {name}, skip")
             continue
-        
-        result = evaluate_single_plaintext_model(
-            name=name,
-            model=model,
-            attack_model=attack_model,
-            test_loader=test_loader,
-            train_loader_eval=train_loader_eval,
-            test_loader_eval=test_loader_eval,
-            criterion=criterion,
-            device=device,
-            verbose=verbose
-        )
-        results[name] = result
-    
+        results[name] = evaluate_single_plaintext(
+            name, model, atk, lp, test_loader, train_eval, test_eval,
+            criterion, device, verbose)
     return results
 
 
-def evaluate_all_mpc_models(
-    models: dict,
-    attack_models: dict,
-    test_loader_mpc: DataLoader,
-    train_loader_mpc_eval: DataLoader,
-    test_loader_mpc_eval: DataLoader,
-    criterion,
-    device: str,
-    verbose: bool = True
-) -> dict:
-    """
-    Evaluate all MPC models.
-    
-    Args:
-        models: Dict of {name: model}
-        attack_models: Dict of {arch_key: attack_model}
-        test_loader_mpc: Test data loader (MPC batch size)
-        train_loader_mpc_eval: Training data loader for MIA (MPC batch size)
-        test_loader_mpc_eval: Test data loader for MIA (MPC batch size)
-        criterion: Loss function
-        device: Computation device (typically 'cpu' for MPC)
-        verbose: Show progress
-    
-    Returns:
-        Dict of {model_name: results_dict}
-    """
-    print("\n" + "=" * 60)
-    print("EVALUATING MPC MODELS")
-    print("=" * 60)
-    
+def evaluate_all_mpc(
+    models, attack_models, lira_params_all,
+    test_mpc, train_mpc, test_mpc_eval,
+    criterion, device, verbose=True,
+):
+    print("\n" + "=" * 60 + "\nEVALUATING MPC MODELS\n" + "=" * 60)
     results = {}
-    
-    for name, model in tqdm(models.items(), desc="MPC Evaluation", disable=not verbose):
-        # MpcCNN_Sigmoid -> CNN_Sigmoid
-        arch_key = name.replace('Mpc', '')
-        attack_model = attack_models.get(arch_key)
-        
-        # Ensure model is decrypted for evaluation
-        if hasattr(model, 'decrypt'):
+    for name, model in tqdm(models.items(), desc="MPC", disable=not verbose):
+        arch = name.replace("Mpc", "")
+        atk = attack_models.get(arch)
+        lp = lira_params_all.get(arch)
+        if hasattr(model, "decrypt"):
             model.decrypt()
-        
-        result = evaluate_single_mpc_model(
-            name=name,
-            model=model,
-            attack_model=attack_model,
-            test_loader_mpc=test_loader_mpc,
-            train_loader_mpc_eval=train_loader_mpc_eval,
-            test_loader_mpc_eval=test_loader_mpc_eval,
-            criterion=criterion,
-            device=device,
-            verbose=verbose
-        )
-        results[name] = result
-    
+        if atk is None:
+            print(f"[WARN] No attack model for {name}, skip")
+            continue
+        results[name] = evaluate_single_mpc(
+            name, model, atk, lp, test_mpc, train_mpc, test_mpc_eval,
+            criterion, device, verbose)
     return results
 
 
-def print_results_summary(results: dict):
-    """Print a formatted summary table of results."""
-    print(f"\n{'=' * 120}")
-    print("RESULTS SUMMARY")
-    print(f"{'=' * 120}")
-    print(f"{'Model':<25} {'Type':<10} {'Test Acc':<10} {'Train Acc':<10} {'Overfit':<10} {'MIA Acc':<10} {'MIA Prec':<10} {'MIA Rec':<10}")
-    print("-" * 120)
-    
-    for name, res in sorted(results.items()):
-        model_type = 'MPC' if res['is_mpc'] else 'Plaintext'
-        mia_acc = f"{res['mia_accuracy']:.2f}" if res['mia_accuracy'] is not None else 'N/A'
-        mia_prec = f"{res['mia_precision']:.4f}" if res['mia_precision'] is not None else 'N/A'
-        mia_rec = f"{res['mia_recall']:.4f}" if res['mia_recall'] is not None else 'N/A'
-        train_acc = f"{res['train_accuracy']:.2f}" if res['train_accuracy'] is not None else 'N/A'
-        overfit = f"{res['overfit_gap']:.2f}" if res['overfit_gap'] is not None else 'N/A'
-        test_acc = f"{res['test_accuracy']:.2f}" if res['test_accuracy'] is not None else 'N/A'
-        
-        print(f"{name:<25} {model_type:<10} {test_acc:<10} {train_acc:<10} {overfit:<10} {mia_acc:<10} {mia_prec:<10} {mia_rec:<10}")
-    
-    print("=" * 120)
+# ═══════════════════════════════════════════════════════════════════════════
+# Aggregation across seeds
+# ═══════════════════════════════════════════════════════════════════════════
+
+_METRIC_KEYS = [
+    "test_accuracy", "train_accuracy", "overfit_gap",
+    "basic_mia_accuracy", "basic_mia_precision", "basic_mia_recall",
+    "basic_mia_auc", "basic_tpr_at_01pct_fpr", "basic_tpr_at_1pct_fpr", "basic_tpr_at_10pct_fpr",
+    "lira_accuracy", "lira_precision", "lira_recall",
+    "lira_auc", "lira_tpr_at_01pct_fpr", "lira_tpr_at_1pct_fpr", "lira_tpr_at_10pct_fpr",
+]
 
 
-def save_results(results: dict, output_dir: str, filename: Optional[str] = None) -> str:
+def aggregate_across_seeds(per_seed: dict[int, dict]) -> dict:
     """
-    Save results to a JSON file.
-    
-    Args:
-        results: Dictionary of results
-        output_dir: Directory to save to
-        filename: Optional filename (default: results_TIMESTAMP.json)
-    
-    Returns:
-        Path to saved file
+    per_seed: {seed: {model_name: result_dict}}
+    Returns:  {model_name: {metric_mean, metric_std, ...}}
     """
+    all_names = set()
+    for sr in per_seed.values():
+        all_names.update(sr.keys())
+
+    agg = {}
+    for name in sorted(all_names):
+        entry = {"model_name": name, "is_mpc": None, "n_seeds": 0}
+        for key in _METRIC_KEYS:
+            vals = []
+            for seed, sr in per_seed.items():
+                if name in sr and sr[name].get(key) is not None:
+                    vals.append(sr[name][key])
+                    if entry["is_mpc"] is None:
+                        entry["is_mpc"] = sr[name].get("is_mpc", False)
+            entry["n_seeds"] = max(entry["n_seeds"], len(vals))
+            entry[f"{key}_mean"] = float(np.mean(vals)) if vals else None
+            entry[f"{key}_std"]  = float(np.std(vals))  if vals else None
+        agg[name] = entry
+    return agg
+
+
+def strip_raw_scores(results: dict) -> dict:
+    """Remove numpy arrays before JSON serialization."""
+    clean = {}
+    for name, r in results.items():
+        clean[name] = {k: v for k, v in r.items() if not k.startswith("_")}
+    return clean
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Results I/O & display
+# ═══════════════════════════════════════════════════════════════════════════
+
+def print_results_summary(results: dict, title: str = "RESULTS"):
+    """Print table for a single seed's results."""
+    hdr = (f"{'Model':<25} {'Type':<6} {'Test%':<7} {'Overfit':<8} "
+           f"{'B-Acc%':<7} {'B-AUC':<7} {'B-TPR1%':<8} "
+           f"{'L-Acc%':<7} {'L-AUC':<7} {'L-TPR1%':<8}")
+    sep = "=" * len(hdr)
+    print(f"\n{sep}\n  {title}\n{sep}\n{hdr}\n{'-' * len(hdr)}")
+
+    def _f(v, fmt=".2f"):
+        return f"{v:{fmt}}" if v is not None else "—"
+
+    for n in sorted(results):
+        r = results[n]
+        tp = "MPC" if r.get("is_mpc") else "PT"
+        print(f"{n:<25} {tp:<6} {_f(r.get('test_accuracy')):<7} {_f(r.get('overfit_gap')):<8} "
+              f"{_f(r.get('basic_mia_accuracy')):<7} {_f(r.get('basic_mia_auc'), '.4f'):<7} "
+              f"{_f(r.get('basic_tpr_at_1pct_fpr'), '.4f'):<8} "
+              f"{_f(r.get('lira_accuracy')):<7} {_f(r.get('lira_auc'), '.4f'):<7} "
+              f"{_f(r.get('lira_tpr_at_1pct_fpr'), '.4f'):<8}")
+    print(sep)
+
+
+def print_aggregated_summary(agg: dict, title: str = "AGGREGATED RESULTS"):
+    """Print table with mean ± std across seeds."""
+    hdr = (f"{'Model':<25} {'Type':<6} {'Test% (±)':<12} "
+           f"{'B-AUC (±)':<12} {'B-TPR1% (±)':<14} "
+           f"{'L-AUC (±)':<12} {'L-TPR1% (±)':<14}")
+    sep = "=" * len(hdr)
+    print(f"\n{sep}\n  {title}\n{sep}\n{hdr}\n{'-' * len(hdr)}")
+
+    def _ms(name, key):
+        m = agg[name].get(f"{key}_mean")
+        s = agg[name].get(f"{key}_std")
+        if m is None:
+            return "—"
+        if s is not None and s > 0:
+            return f"{m:.2f}±{s:.2f}"
+        return f"{m:.2f}"
+
+    def _ms4(name, key):
+        m = agg[name].get(f"{key}_mean")
+        s = agg[name].get(f"{key}_std")
+        if m is None:
+            return "—"
+        if s is not None and s > 0:
+            return f"{m:.4f}±{s:.4f}"
+        return f"{m:.4f}"
+
+    for n in sorted(agg):
+        tp = "MPC" if agg[n].get("is_mpc") else "PT"
+        print(f"{n:<25} {tp:<6} {_ms(n, 'test_accuracy'):<12} "
+              f"{_ms4(n, 'basic_mia_auc'):<12} {_ms4(n, 'basic_tpr_at_1pct_fpr'):<14} "
+              f"{_ms4(n, 'lira_auc'):<12} {_ms4(n, 'lira_tpr_at_1pct_fpr'):<14}")
+    print(sep)
+
+
+def save_results(per_seed, aggregated, config_dict, seeds, dataset_name, output_dir, timestamp):
     os.makedirs(output_dir, exist_ok=True)
-    
-    if filename is None:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"results_{timestamp}.json"
-    
-    filepath = os.path.join(output_dir, filename)
-    
-    # Add metadata
+    filepath = os.path.join(output_dir, f"results_{timestamp}.json")
+
+    # Strip raw numpy arrays from per-seed data
+    clean_per_seed = {str(s): strip_raw_scores(r) for s, r in per_seed.items()}
+
     output = {
-        'timestamp': datetime.now().isoformat(),
-        'results': results
+        "timestamp": datetime.now().isoformat(),
+        "dataset": dataset_name,
+        "seeds": seeds,
+        "config": config_dict,
+        "aggregated": aggregated,
+        "per_seed": clean_per_seed,
     }
-    
-    with open(filepath, 'w') as f:
+    with open(filepath, "w") as f:
         json.dump(output, f, indent=2)
-    
-    print(f"\nResults saved to: {filepath}")
+    print(f"\nResults saved: {filepath}")
     return filepath
-
-
-def load_results(filepath: str) -> dict:
-    """Load results from a JSON file."""
-    with open(filepath, 'r') as f:
-        data = json.load(f)
-    return data.get('results', data)
