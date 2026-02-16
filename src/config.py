@@ -34,23 +34,23 @@ def setup_dirs(base_dir=None, dataset_name="cifar10", seed=42):
 
 @dataclass
 class ExperimentConfig:
-    cnn_epochs: int = 100
-    mlp_epochs: int = 150
-    lenet_epochs: int = 60
-    mpc_cnn_epochs: int = 100
-    mpc_mlp_epochs: int = 150
-    mpc_lenet_epochs: int = 60
-    attack_epochs: int = 30
+    cnn_epochs: int = 200
+    mlp_epochs: int = 300
+    lenet_epochs: int = 150
+    mpc_cnn_epochs: int = 200
+    mpc_mlp_epochs: int = 300
+    mpc_lenet_epochs: int = 150
+    attack_epochs: int = 60
     num_shadow_models: int = 22
-    target_train_size: int = 20000
+    target_train_size: int = 25000
     batch_size: int = 128
     mpc_batch_size: int = 32
     learning_rate: float = 1e-2
     weight_decay: float = 1e-5
-    shadow_pool_ratio: float = 0.5
+    shadow_pool_ratio: float = 0.7
     seed: int = 42
     num_workers: int = 2
-    early_stopping_patience: int = 15
+    early_stopping_patience: int = 30
     early_stopping_min_delta: float = 0.0005
 
     def get_plaintext_epochs(self, model_name: str) -> int:

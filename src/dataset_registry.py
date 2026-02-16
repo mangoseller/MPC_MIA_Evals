@@ -113,18 +113,19 @@ def _cifar100_transforms():
 
 
 def _pathmnist_transforms():
-    mean, std = (0.5,), (0.5,)  # generic; works well for MedMNIST
+    mean = (0.7405, 0.5330, 0.7058)
+    std  = (0.0684, 0.0903, 0.0547)
     train = transforms.Compose([
         transforms.Resize(32),
         transforms.RandomHorizontalFlip(),
         transforms.RandomVerticalFlip(),
         transforms.ToTensor(),
-        transforms.Normalize(mean * 3, std * 3),  # 3-channel
+        transforms.Normalize(mean, std),
     ])
     test = transforms.Compose([
         transforms.Resize(32),
         transforms.ToTensor(),
-        transforms.Normalize(mean * 3, std * 3),
+        transforms.Normalize(mean, std),
     ])
     return train, test
 

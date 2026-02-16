@@ -16,16 +16,16 @@ from functools import partial
 class PlainTextCNN(nn.Module):
     def __init__(self, num_classes=10, activation_fn=nn.Sigmoid):
         super().__init__()
-        self.conv1 = nn.Conv2d(3, 32, kernel_size=3, padding=1)
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, padding=1)
         self.activation1 = activation_fn()
         self.pool1 = nn.AvgPool2d(2, 2)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
         self.activation2 = activation_fn()
         self.pool2 = nn.AvgPool2d(2, 2)
         self.flatten = nn.Flatten()
-        self.fc1 = nn.Linear(64 * 8 * 8, 512)
+        self.fc1 = nn.Linear(128 * 8 * 8, 1024)
         self.activation3 = activation_fn()
-        self.fc2 = nn.Linear(512, num_classes)
+        self.fc2 = nn.Linear(1024, num_classes)
 
         layers = [
             self.conv1,
@@ -50,11 +50,11 @@ class PlainTextMLP(nn.Module):
     def __init__(self, num_classes=10, activation_fn=nn.Sigmoid):
         super().__init__()
         self.flatten = nn.Flatten()
-        self.fc1 = nn.Linear(3072, 512)
+        self.fc1 = nn.Linear(3072, 1024)
         self.activation1 = activation_fn()
-        self.fc2 = nn.Linear(512, 256)
+        self.fc2 = nn.Linear(1024, 512)
         self.activation2 = activation_fn()
-        self.fc3 = nn.Linear(256, num_classes)
+        self.fc3 = nn.Linear(512, num_classes)
 
         layers = [
             self.flatten,
@@ -155,18 +155,18 @@ class MpcCNN(cnn.Module):
 
     def __init__(self, num_classes=10, activation_fn=cnn.Sigmoid):
         super().__init__()
-        self.conv1 = cnn.Conv2d(3, 32, kernel_size=3, padding=1)
+        self.conv1 = cnn.Conv2d(3, 64, kernel_size=3, padding=1)
         self.activation1 = activation_fn()
         self.pool1 = cnn.AvgPool2d(2, 2)
-        self.conv2 = cnn.Conv2d(32, 64, kernel_size=3, padding=1)
+        self.conv2 = cnn.Conv2d(64, 128, kernel_size=3, padding=1)
         self.activation2 = activation_fn()
         self.pool2 = cnn.AvgPool2d(2, 2)
-        
+
         self.flatten = MpcFlatten()
-        
-        self.fc1 = cnn.Linear(64 * 8 * 8, 512)
+
+        self.fc1 = cnn.Linear(128 * 8 * 8, 1024)
         self.activation3 = activation_fn()
-        self.fc2 = cnn.Linear(512, num_classes)
+        self.fc2 = cnn.Linear(1024, num_classes)
 
         layers = [
             self.conv1,
@@ -190,11 +190,11 @@ class MpcMLP(cnn.Module):
     def __init__(self, num_classes=10, activation_fn=cnn.Sigmoid):
         super().__init__()
         self.flatten = MpcFlatten()
-        self.fc1 = cnn.Linear(3072, 512)
+        self.fc1 = cnn.Linear(3072, 1024)
         self.activation1 = activation_fn()
-        self.fc2 = cnn.Linear(512, 256)
+        self.fc2 = cnn.Linear(1024, 512)
         self.activation2 = activation_fn()
-        self.fc3 = cnn.Linear(256, num_classes)
+        self.fc3 = cnn.Linear(512, num_classes)
 
         layers = [
             self.flatten,

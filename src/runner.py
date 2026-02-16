@@ -152,7 +152,8 @@ def run_single_experiment(cfg: ExperimentConfig, ds: DatasetSpec,
             np.random.seed(seed)
             shadows, indices = train_shadow_models(
                 cfg.num_shadow_models, mcls, full_train, shadow_pool_idx,
-                name, DIRS["shadow_models"], ep, nc, device, verbose)
+                name, DIRS["shadow_models"], ep, nc, device, verbose,
+                lr=cfg.learning_rate)
 
         shadow_all[name] = (shadows, indices)
 
@@ -304,20 +305,20 @@ def parse_args():
                    help="Comma-separated random seeds (e.g., 42,14,12,2,0)")
 
     # Epoch budgets
-    p.add_argument("--cnn-epochs",    type=int, default=100)
-    p.add_argument("--mlp-epochs",    type=int, default=150)
-    p.add_argument("--lenet-epochs",  type=int, default=60)
-    p.add_argument("--mpc-cnn-epochs",   type=int, default=100)
-    p.add_argument("--mpc-mlp-epochs",   type=int, default=150)
-    p.add_argument("--mpc-lenet-epochs", type=int, default=60)
+    p.add_argument("--cnn-epochs",    type=int, default=200)
+    p.add_argument("--mlp-epochs",    type=int, default=300)
+    p.add_argument("--lenet-epochs",  type=int, default=150)
+    p.add_argument("--mpc-cnn-epochs",   type=int, default=200)
+    p.add_argument("--mpc-mlp-epochs",   type=int, default=300)
+    p.add_argument("--mpc-lenet-epochs", type=int, default=150)
 
     # Shadow & attack
-    p.add_argument("--attack-epochs",      type=int, default=30)
+    p.add_argument("--attack-epochs",      type=int, default=60)
     p.add_argument("--num-shadow-models",  type=int, default=22)
 
     # Data
-    p.add_argument("--target-train-size",  type=int, default=20000)
-    p.add_argument("--shadow-pool-ratio",  type=float, default=0.5)
+    p.add_argument("--target-train-size",  type=int, default=25000)
+    p.add_argument("--shadow-pool-ratio",  type=float, default=0.7)
 
     # Training
     p.add_argument("--batch-size",     type=int,   default=128)
@@ -327,7 +328,7 @@ def parse_args():
     p.add_argument("--num-workers",    type=int,   default=2)
 
     # Early stopping
-    p.add_argument("--early-stopping-patience",  type=int,   default=15)
+    p.add_argument("--early-stopping-patience",  type=int,   default=30)
     p.add_argument("--early-stopping-min-delta", type=float, default=0.0005)
 
     # Flags

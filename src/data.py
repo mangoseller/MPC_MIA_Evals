@@ -12,15 +12,24 @@ def partition_dataset_for_mia(full_dataset, target_train_size, shadow_pool_ratio
     dataset_size = len(full_dataset)
     all_indices = np.random.permutation(dataset_size)
 
+    if target_train_size >= dataset_size:
+        raise ValueError(
+            f"target_train_size ({target_train_size}) >= dataset size ({dataset_size})")
+
     target_train_indices = all_indices[:target_train_size]
     remaining_indices = all_indices[target_train_size:]
 
     shadow_pool_size = int(len(remaining_indices) * shadow_pool_ratio)
     shadow_pool_indices = remaining_indices[:shadow_pool_size]
-    target_test_indices = remaining_indices[shadow_pool_size : shadow_pool_size + target_train_size]
+    target_test_indices = remaining_indices[shadow_pool_size:]
+
+    if len(target_test_indices) < 1000:
+        raise ValueError(
+            f"Only {len(target_test_indices)} non-member test samples remaining. "
+            f"Reduce target_train_size or shadow_pool_ratio.")
 
     print(f"Target train: {len(target_train_indices)}  |  "
-          f"Target test: {len(target_test_indices)}  |  "
+          f"Target test (non-members): {len(target_test_indices)}  |  "
           f"Shadow pool: {len(shadow_pool_indices)}")
 
     return target_train_indices, target_test_indices, shadow_pool_indices
@@ -29,7 +38,7 @@ def partition_dataset_for_mia(full_dataset, target_train_size, shadow_pool_ratio
 def train_shadow_models(
     num_shadows, model_class, full_dataset, shadow_pool_indices,
     model_name, base_dir, num_epochs, num_classes=10,
-    device="cuda", verbose=True,
+    device="cuda", verbose=True, lr=1e-2,
 ):
     """
     Train shadow models on the shadow pool.
@@ -64,7 +73,7 @@ def train_shadow_models(
         shadow_iter.set_postfix(model=f"{i+1}/{num_shadows}")
 
         shadow_model = _train_shadow_model(
-            shadow_model, train_loader, num_epochs, lr=1e-3, device=device, verbose=False,
+            shadow_model, train_loader, num_epochs, lr=lr, device=device, verbose=False,
         )
 
         t.save(shadow_model.state_dict(), os.path.join(shadow_save_dir, f"shadow_{i}.pt"))
