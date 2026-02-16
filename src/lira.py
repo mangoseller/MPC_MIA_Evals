@@ -45,7 +45,7 @@ def fit_lira_distributions(
     with t.no_grad():
         for i, model in tqdm(enumerate(shadow_models), total=len(shadow_models),
                              desc="Fitting LiRA", disable=not verbose):
-            model.eval()
+            model.to(device).eval()
             train_idx, test_idx = shadow_indices[i]
             train_set = set(train_idx.tolist() if hasattr(train_idx, "tolist") else train_idx)
 
@@ -66,6 +66,9 @@ def fit_lira_distributions(
                 c = all_labels[j].item()
                 logit_conf = _logit_transform(all_probs[j][c].item())
                 (class_in if idx in train_set else class_out)[c].append(logit_conf)
+
+            model.cpu()
+            t.cuda.empty_cache()
 
     params = {}
     for c in range(num_classes):

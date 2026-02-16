@@ -33,7 +33,7 @@ def prepare_attack_dataset(shadow_models, shadow_indices, full_dataset,
     with t.no_grad():
         for i, model in tqdm(enumerate(shadow_models), total=len(shadow_models),
                              desc="Preparing Attack Dataset", disable=not verbose):
-            model.eval()
+            model.to(device).eval()
             train_idx, test_idx = shadow_indices[i]
             train_set = set(train_idx.tolist() if hasattr(train_idx, "tolist") else train_idx)
 
@@ -51,6 +51,9 @@ def prepare_attack_dataset(shadow_models, shadow_indices, full_dataset,
             for j, idx in enumerate(all_idx):
                 X_attack.append(all_preds[j])
                 y_attack.append(1.0 if idx in train_set else 0.0)
+
+            model.cpu()
+            t.cuda.empty_cache()
 
     return t.stack(X_attack), t.tensor(y_attack).unsqueeze(1)
 

@@ -83,10 +83,10 @@ def load_mpc_model(model_class, path, num_classes=10):
 def load_shadow_models(model_class, paths, device, num_classes=10):
     models = []
     for path in paths:
-        m = model_class(num_classes=num_classes).to(device)
-        m.load_state_dict(t.load(path, map_location=device))
+        m = model_class(num_classes=num_classes)
+        m.load_state_dict(t.load(path, map_location="cpu"))
         models.append(m)
-    print(f"  Loaded {len(models)} shadow models")
+    print(f"  Loaded {len(models)} shadow models (on CPU)")
     return models
 
 

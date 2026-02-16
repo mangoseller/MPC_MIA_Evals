@@ -66,17 +66,28 @@ def train_shadow_models(
         train_indices = shadow_pool_indices[train_local]
         test_indices = shadow_pool_indices[test_local]
 
-        train_subset = Subset(full_dataset, train_indices)
-        train_loader = DataLoader(train_subset, batch_size=128, shuffle=True, num_workers=0)
+        save_path = os.path.join(shadow_save_dir, f"shadow_{i}.pt")
 
-        shadow_model = model_class(num_classes=num_classes).to(device)
-        shadow_iter.set_postfix(model=f"{i+1}/{num_shadows}")
+        if os.path.exists(save_path):
+            # Resume: load already-trained shadow model
+            shadow_model = model_class(num_classes=num_classes)
+            shadow_model.load_state_dict(t.load(save_path, map_location="cpu"))
+            shadow_iter.set_postfix(model=f"{i+1}/{num_shadows}", status="loaded")
+        else:
+            train_subset = Subset(full_dataset, train_indices)
+            train_loader = DataLoader(train_subset, batch_size=128, shuffle=True, num_workers=0)
 
-        shadow_model = _train_shadow_model(
-            shadow_model, train_loader, num_epochs, lr=lr, device=device, verbose=False,
-        )
+            shadow_model = model_class(num_classes=num_classes).to(device)
+            shadow_iter.set_postfix(model=f"{i+1}/{num_shadows}", status="training")
 
-        t.save(shadow_model.state_dict(), os.path.join(shadow_save_dir, f"shadow_{i}.pt"))
+            shadow_model = _train_shadow_model(
+                shadow_model, train_loader, num_epochs, lr=lr, device=device, verbose=False,
+            )
+
+            t.save(shadow_model.state_dict(), save_path)
+            shadow_model.cpu()
+            t.cuda.empty_cache()
+
         shadow_models.append(shadow_model)
         shadow_data_indices.append((train_indices, test_indices))
 
