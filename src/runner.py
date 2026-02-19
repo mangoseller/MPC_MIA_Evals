@@ -37,14 +37,14 @@ from lira import fit_lira_distributions
 from evaluation import (
     evaluate_all_plaintext, evaluate_all_mpc,
     aggregate_across_seeds, print_results_summary, print_aggregated_summary,
-    save_results,
+    save_results, load_seed_results, save_seed_results,
 )
 from charts import generate_all_charts
 from checkpointing import (
     check_plaintext_target_exists, check_shadow_models_exist,
     check_attack_model_exists, find_latest_intermediate_checkpoint,
     load_plaintext_model, load_shadow_models, load_attack_model,
-    extract_epochs_from_checkpoint,
+    extract_epochs_from_checkpoint, check_all_training_complete,
 )
 
 
@@ -95,6 +95,12 @@ def run_single_experiment(cfg: ExperimentConfig, ds: DatasetSpec,
     attack_models      = {}
     lira_params_all    = {}
     epochs_map         = {}
+
+    # ── Check if all training is already complete ─────────────────────
+    all_trained = check_all_training_complete(
+        list(PLAINTEXT_MODELS.keys()), DIRS, cfg.num_shadow_models)
+    if all_trained:
+        print(f"\n[RESUME] All training artifacts found — fast-forwarding to evaluation.")
 
     # ── Phase 1: plaintext targets ────────────────────────────────────
     print(f"\n{'=' * 70}\nPHASE 1: PLAINTEXT TARGETS\n{'=' * 70}")
@@ -192,13 +198,27 @@ def run_single_experiment(cfg: ExperimentConfig, ds: DatasetSpec,
 
     mpc_models = convert_all_plaintext_to_mpc(plaintext_models, nc, verbose)
 
+    # ── Load cached eval results for resume ──────────────────────────
+    code_dir = os.path.dirname(os.path.abspath(__file__))
+    base_dir = os.path.dirname(code_dir)
+    results_dir = os.path.join(base_dir, "results", ds.name)
+    cached = load_seed_results(results_dir, ds.name, seed)
+
+    # Incremental save callback — merges new results into running total
+    all_results = {}
+
+    def _save_incremental(partial_results):
+        all_results.update(partial_results)
+        save_seed_results(all_results, results_dir, ds.name, seed)
+
     # ── Phase 6: evaluate plaintext ──────────────────────────────────
     print(f"\n{'=' * 70}\nPHASE 6: EVALUATE PLAINTEXT\n{'=' * 70}")
 
     pt_results = evaluate_all_plaintext(
         plaintext_models, attack_models, lira_params_all,
         test_loader, train_loader_eval, test_loader_eval,
-        criterion, device, verbose)
+        criterion, device, verbose,
+        cached_results=cached, save_callback=_save_incremental)
 
     # ── Phase 7: evaluate MPC ────────────────────────────────────────
     print(f"\n{'=' * 70}\nPHASE 7: EVALUATE MPC\n{'=' * 70}")
@@ -206,9 +226,12 @@ def run_single_experiment(cfg: ExperimentConfig, ds: DatasetSpec,
     mpc_results = evaluate_all_mpc(
         mpc_models, attack_models, lira_params_all,
         test_mpc, train_mpc_eval, test_mpc_eval,
-        criterion, "cpu", verbose)
+        criterion, "cpu", verbose,
+        cached_results=cached, save_callback=_save_incremental)
 
     all_results = {**pt_results, **mpc_results}
+    # Final incremental save with all results
+    save_seed_results(all_results, results_dir, ds.name, seed)
     print_results_summary(all_results, f"SEED {seed} — {ds.name.upper()}")
 
     return all_results

@@ -107,6 +107,31 @@ def load_attack_model(path, device, num_classes=10):
     return model
 
 
+def check_all_training_complete(model_names, dirs, num_shadows):
+    """
+    Check if all training artifacts (plaintext targets, shadow models,
+    attack models) exist for every architecture — i.e. phases 1–3 are done.
+
+    Returns True only if every model has a final checkpoint, all shadows,
+    and an attack model on disk.
+    """
+    for name in model_names:
+        # Plaintext target
+        exists, _ = check_plaintext_target_exists(name, dirs)
+        if not exists:
+            return False
+        # Shadow models
+        exists, _ = check_shadow_models_exist(name, dirs, num_shadows)
+        if not exists:
+            return False
+        # Attack model
+        arch = name.replace("PlainText", "")
+        exists, _ = check_attack_model_exists(arch, dirs)
+        if not exists:
+            return False
+    return True
+
+
 def get_attack_model_for_architecture(arch_key, attack_models, dirs, device, num_classes=10):
     if arch_key in attack_models:
         return attack_models[arch_key]

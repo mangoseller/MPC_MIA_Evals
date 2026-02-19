@@ -246,10 +246,16 @@ def evaluate_all_plaintext(
     models, attack_models, lira_params_all,
     test_loader, train_eval, test_eval,
     criterion, device, verbose=True,
+    cached_results=None, save_callback=None,
 ):
     print("\n" + "=" * 60 + "\nEVALUATING PLAINTEXT MODELS\n" + "=" * 60)
     results = {}
+    cached_results = cached_results or {}
     for name, model in tqdm(models.items(), desc="Plaintext", disable=not verbose):
+        if name in cached_results:
+            print(f"\n[EVAL] {name}  [SKIP — cached]")
+            results[name] = cached_results[name]
+            continue
         arch = name.replace("PlainText", "")
         atk = attack_models.get(arch)
         lp = lira_params_all.get(arch)
@@ -259,6 +265,8 @@ def evaluate_all_plaintext(
         results[name] = evaluate_single_plaintext(
             name, model, atk, lp, test_loader, train_eval, test_eval,
             criterion, device, verbose)
+        if save_callback is not None:
+            save_callback(results)
     return results
 
 
@@ -266,10 +274,16 @@ def evaluate_all_mpc(
     models, attack_models, lira_params_all,
     test_mpc, train_mpc, test_mpc_eval,
     criterion, device, verbose=True,
+    cached_results=None, save_callback=None,
 ):
     print("\n" + "=" * 60 + "\nEVALUATING MPC MODELS\n" + "=" * 60)
     results = {}
+    cached_results = cached_results or {}
     for name, model in tqdm(models.items(), desc="MPC", disable=not verbose):
+        if name in cached_results:
+            print(f"\n[EVAL] {name}  [SKIP — cached]")
+            results[name] = cached_results[name]
+            continue
         arch = name.replace("Mpc", "")
         atk = attack_models.get(arch)
         lp = lira_params_all.get(arch)
@@ -281,6 +295,8 @@ def evaluate_all_mpc(
         results[name] = evaluate_single_mpc(
             name, model, atk, lp, test_mpc, train_mpc, test_mpc_eval,
             criterion, device, verbose)
+        if save_callback is not None:
+            save_callback(results)
     return results
 
 
@@ -389,6 +405,55 @@ def print_aggregated_summary(agg: dict, title: str = "AGGREGATED RESULTS"):
               f"{_ms4(n, 'basic_mia_auc'):<12} {_ms4(n, 'basic_tpr_at_1pct_fpr'):<14} "
               f"{_ms4(n, 'lira_auc'):<12} {_ms4(n, 'lira_tpr_at_1pct_fpr'):<14}")
     print(sep)
+
+
+def _seed_results_path(results_dir: str, dataset_name: str, seed: int) -> str:
+    """Stable path for per-seed incremental results (not timestamped)."""
+    return os.path.join(results_dir, f"seed_{seed}_results.json")
+
+
+def load_seed_results(results_dir: str, dataset_name: str, seed: int) -> dict:
+    """
+    Load previously saved per-seed evaluation results.
+
+    Returns:
+        dict mapping model_name → result_dict (without raw arrays),
+        or empty dict if no cached results found.
+    """
+    path = _seed_results_path(results_dir, dataset_name, seed)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+        cached = data.get("results", {})
+        print(f"  [CACHE] Loaded {len(cached)} cached eval results from {path}")
+        return cached
+    except (json.JSONDecodeError, KeyError) as e:
+        print(f"  [WARN] Failed to load cached results: {e}")
+        return {}
+
+
+def save_seed_results(results: dict, results_dir: str, dataset_name: str, seed: int):
+    """
+    Save per-seed evaluation results incrementally to a stable (non-timestamped) JSON.
+    Strips raw numpy arrays before writing.
+    """
+    os.makedirs(results_dir, exist_ok=True)
+    path = _seed_results_path(results_dir, dataset_name, seed)
+
+    clean = {}
+    for name, r in results.items():
+        clean[name] = {k: v for k, v in r.items() if not k.startswith("_")}
+
+    output = {
+        "timestamp": datetime.now().isoformat(),
+        "dataset": dataset_name,
+        "seed": seed,
+        "results": clean,
+    }
+    with open(path, "w") as f:
+        json.dump(output, f, indent=2)
 
 
 def save_results(per_seed, aggregated, config_dict, seeds, dataset_name, output_dir, timestamp):
