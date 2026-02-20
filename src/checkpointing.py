@@ -1,6 +1,7 @@
 import os
 import glob
 import re
+import json
 import torch as t
 import crypten
 from attack import AttackNet
@@ -110,10 +111,11 @@ def load_attack_model(path, device, num_classes=10):
 def check_all_training_complete(model_names, dirs, num_shadows):
     """
     Check if all training artifacts (plaintext targets, shadow models,
-    attack models) exist for every architecture — i.e. phases 1–3 are done.
+    attack models, LiRA distributions) exist for every architecture —
+    i.e. phases 1–4 are done.
 
     Returns True only if every model has a final checkpoint, all shadows,
-    and an attack model on disk.
+    an attack model, and LiRA params on disk.
     """
     for name in model_names:
         # Plaintext target
@@ -129,6 +131,10 @@ def check_all_training_complete(model_names, dirs, num_shadows):
         exists, _ = check_attack_model_exists(arch, dirs)
         if not exists:
             return False
+        # LiRA distributions
+        exists, _ = check_lira_params_exist(arch, dirs)
+        if not exists:
+            return False
     return True
 
 
@@ -139,3 +145,35 @@ def get_attack_model_for_architecture(arch_key, attack_models, dirs, device, num
     if exists:
         return load_attack_model(path, device, num_classes)
     return None
+
+
+# ── LiRA distribution persistence ────────────────────────────────────────
+
+def _lira_path(arch_key, dirs):
+    return os.path.join(dirs["attack_models"], f"lira_{arch_key}.json")
+
+
+def check_lira_params_exist(arch_key, dirs):
+    path = _lira_path(arch_key, dirs)
+    return os.path.exists(path), path
+
+
+def save_lira_params(arch_key, lira_params, dirs):
+    """Save fitted LiRA per-class distributions to JSON."""
+    path = _lira_path(arch_key, dirs)
+    # Convert int keys to strings for JSON
+    serializable = {str(k): v for k, v in lira_params.items()}
+    with open(path, "w") as f:
+        json.dump(serializable, f, indent=2)
+    print(f"  Saved LiRA params: {path}")
+
+
+def load_lira_params(arch_key, dirs):
+    """Load fitted LiRA per-class distributions from JSON."""
+    path = _lira_path(arch_key, dirs)
+    with open(path, "r") as f:
+        data = json.load(f)
+    # Restore int keys
+    params = {int(k): v for k, v in data.items()}
+    print(f"  Loaded LiRA params: {path}")
+    return params

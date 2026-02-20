@@ -45,6 +45,7 @@ from checkpointing import (
     check_attack_model_exists, find_latest_intermediate_checkpoint,
     load_plaintext_model, load_shadow_models, load_attack_model,
     extract_epochs_from_checkpoint, check_all_training_complete,
+    check_lira_params_exist, save_lira_params, load_lira_params,
 )
 
 
@@ -189,9 +190,16 @@ def run_single_experiment(cfg: ExperimentConfig, ds: DatasetSpec,
     for name in tqdm(PLAINTEXT_MODELS, desc="LiRA", disable=not verbose):
         arch = name.replace("PlainText", "")
         print(f"\n[LiRA] {arch}")
-        shadows, indices = shadow_all[name]
-        lira_params_all[arch] = fit_lira_distributions(
-            shadows, indices, full_eval, nc, device, verbose)
+        exists, lpath = check_lira_params_exist(arch, DIRS)
+
+        if exists:
+            print(f"  [SKIP] {lpath}")
+            lira_params_all[arch] = load_lira_params(arch, DIRS)
+        else:
+            shadows, indices = shadow_all[name]
+            lira_params_all[arch] = fit_lira_distributions(
+                shadows, indices, full_eval, nc, device, verbose)
+            save_lira_params(arch, lira_params_all[arch], DIRS)
 
     # ── Phase 5: convert → MPC ────────────────────────────────────────
     print(f"\n{'=' * 70}\nPHASE 5: PLAINTEXT → MPC CONVERSION\n{'=' * 70}")
