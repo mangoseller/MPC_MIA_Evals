@@ -101,6 +101,9 @@ def evaluate_lira(
     Returns:
         dict with accuracy, precision, recall, and raw scores/labels for ROC.
     """
+    if is_mpc and not crypten.is_initialized():
+        crypten.init()
+
     if not is_mpc:
         target_model.eval()
 
@@ -112,6 +115,7 @@ def evaluate_lira(
 
         for inputs, labels in tqdm(loader, desc=desc, leave=False, disable=not verbose):
             if is_mpc:
+                inputs = inputs.cpu() if inputs.is_cuda else inputs
                 with t.no_grad():
                     x = crypten.cryptensor(inputs)
                     out = target_model(x)

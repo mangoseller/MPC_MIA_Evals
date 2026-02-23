@@ -64,21 +64,29 @@ def evaluate_accuracy(model, loader, criterion, device, verbose=True):
 
 
 def evaluate_accuracy_mpc(model, loader, criterion, verbose=True):
+    if not crypten.is_initialized():
+        crypten.init()
+
     loss_sum = correct = total = 0
     was_enc = getattr(model, "encrypted", False)
     if not was_enc:
         model.encrypt()
 
-    for x, y in tqdm(loader, desc="Eval MPC", leave=False, disable=not verbose):
-        x_enc = crypten.cryptensor(x)
+    try:
         with t.no_grad():
-            out = model(x_enc).get_plain_text()
-        loss_sum += criterion(out, y).item()
-        correct += (out.argmax(1) == y).sum().item()
-        total += y.size(0)
+            for x, y in tqdm(loader, desc="Eval MPC", leave=False, disable=not verbose):
+                x = x.cpu() if x.is_cuda else x
+                x_enc = crypten.cryptensor(x)
+                out = model(x_enc).get_plain_text()
+                loss_sum += criterion(out, y).item()
+                correct += (out.argmax(1) == y).sum().item()
+                total += y.size(0)
+                del x_enc, out
+                gc.collect()
+    finally:
+        if not was_enc:
+            model.decrypt()
 
-    if not was_enc:
-        model.decrypt()
     return loss_sum / len(loader), 100.0 * correct / total
 
 
@@ -91,6 +99,9 @@ def evaluate_mia(target_model, attack_model, train_loader, test_loader,
     """
     Returns dict with accuracy/precision/recall/ROC metrics AND raw_scores/raw_labels.
     """
+    if is_mpc and not crypten.is_initialized():
+        crypten.init()
+
     if not is_mpc:
         target_model.eval()
 
@@ -104,10 +115,12 @@ def evaluate_mia(target_model, attack_model, train_loader, test_loader,
             target_model.encrypt()
         for inputs, _ in tqdm(loader, desc=desc, leave=False, disable=not verbose):
             if is_mpc:
+                inputs = inputs.cpu() if inputs.is_cuda else inputs
                 with t.no_grad():
                     xe = crypten.cryptensor(inputs)
-                    bp = F.softmax(target_model(xe).get_plain_text(), dim=1)
-                    del xe
+                    out = target_model(xe)
+                    bp = F.softmax(out.get_plain_text(), dim=1)
+                    del xe, out
                 gc.collect()
             else:
                 inputs = inputs.to(device)
@@ -188,19 +201,25 @@ def evaluate_single_mpc(
 ) -> dict:
     print(f"\n[EVAL] {name}")
 
-    test_loss, test_acc = evaluate_accuracy_mpc(model, test_loader_mpc, criterion, verbose)
-    print(f"  Test {test_acc:.2f}%")
+    try:
+        test_loss, test_acc = evaluate_accuracy_mpc(model, test_loader_mpc, criterion, verbose)
+        print(f"  Test {test_acc:.2f}%")
 
-    basic = evaluate_mia(model, attack_model, train_loader_mpc, test_loader_mpc_eval,
-                         device="cpu", is_mpc=True, verbose=verbose)
-    print(f"  Basic MIA  Acc {basic['accuracy']:.2f}% AUC {basic['roc_auc']:.4f} "
-          f"TPR@1%FPR {basic['roc_tpr_at_1pct_fpr']:.4f}")
+        basic = evaluate_mia(model, attack_model, train_loader_mpc, test_loader_mpc_eval,
+                             device="cpu", is_mpc=True, verbose=verbose)
+        print(f"  Basic MIA  Acc {basic['accuracy']:.2f}% AUC {basic['roc_auc']:.4f} "
+              f"TPR@1%FPR {basic['roc_tpr_at_1pct_fpr']:.4f}")
 
-    lira = evaluate_lira(model, lira_params, train_loader_mpc, test_loader_mpc_eval,
-                         device="cpu", is_mpc=True, verbose=verbose)
-    lira_roc = compute_roc_metrics(lira["raw_scores"], lira["raw_labels"])
-    print(f"  LiRA       Acc {lira['accuracy']:.2f}% AUC {lira_roc['auc']:.4f} "
-          f"TPR@1%FPR {lira_roc['tpr_at_1pct_fpr']:.4f}")
+        lira = evaluate_lira(model, lira_params, train_loader_mpc, test_loader_mpc_eval,
+                             device="cpu", is_mpc=True, verbose=verbose)
+        lira_roc = compute_roc_metrics(lira["raw_scores"], lira["raw_labels"])
+        print(f"  LiRA       Acc {lira['accuracy']:.2f}% AUC {lira_roc['auc']:.4f} "
+              f"TPR@1%FPR {lira_roc['tpr_at_1pct_fpr']:.4f}")
+    finally:
+        # Always ensure model is decrypted so subsequent evals aren't corrupted
+        if hasattr(model, "encrypted") and model.encrypted:
+            model.decrypt()
+        gc.collect()
 
     return _build_result(name, True,
                          test_loss, test_acc, None, None, None,
@@ -292,9 +311,20 @@ def evaluate_all_mpc(
         if atk is None:
             print(f"[WARN] No attack model for {name}, skip")
             continue
-        results[name] = evaluate_single_mpc(
-            name, model, atk, lp, test_mpc, train_mpc, test_mpc_eval,
-            criterion, device, verbose)
+        try:
+            results[name] = evaluate_single_mpc(
+                name, model, atk, lp, test_mpc, train_mpc, test_mpc_eval,
+                criterion, device, verbose)
+        except Exception as e:
+            print(f"\n[ERROR] MPC eval failed for {name}: {e}")
+            print(f"  Skipping {name} and continuing with remaining models.")
+            if hasattr(model, "decrypt"):
+                try:
+                    model.decrypt()
+                except Exception:
+                    pass
+            gc.collect()
+            continue
         if save_callback is not None:
             save_callback(results)
     return results

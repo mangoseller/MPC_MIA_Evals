@@ -1,3 +1,4 @@
+import gc
 import os
 import time
 import torch as t
@@ -111,6 +112,7 @@ def mpc_train_epoch(model, train_loader, optimizer, criterion, device, num_class
     batch_iter = tqdm(enumerate(train_loader), total=len(train_loader),
                       desc="Batch", leave=False, disable=not verbose)
     for batch_idx, (inputs, targets) in batch_iter:
+        inputs = inputs.cpu() if inputs.is_cuda else inputs
         x_enc = crypten.cryptensor(inputs)
         y_one_hot = F.one_hot(targets, num_classes=num_classes).float()
         y_enc = crypten.cryptensor(y_one_hot)
@@ -128,6 +130,9 @@ def mpc_train_epoch(model, train_loader, optimizer, criterion, device, num_class
         correct += (output_plain.argmax(1) == targets).sum().item()
         total += targets.size(0)
         batch_iter.set_postfix(loss=f"{loss_val:.4f}")
+
+        del x_enc, y_enc, output_enc, loss_enc, output_plain
+        gc.collect()
 
     return running_loss / len(train_loader), 100.0 * correct / total
 

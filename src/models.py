@@ -147,8 +147,14 @@ class MpcGELU(cnn.Module):
         self.coeff = 0.044715
     
     def forward(self, x):
+        # Clamp inputs to prevent x^3 from pushing the tanh argument outside
+        # CrypTen's stable Chebyshev approximation range (~[-8, 8]).
+        # For |x| > 5, true GELU ≈ x (positive) or ≈ 0 (negative), so
+        # clamping the *inner computation* input doesn't change the function
+        # meaningfully but prevents catastrophic polynomial divergence.
+        x_clamped = x.clamp(-5.0, 5.0)
         # sqrt(2/pi) MUST multiply the inner expression BEFORE tanh
-        inner = self.sqrt_2_over_pi * (x + self.coeff * x * x * x)
+        inner = self.sqrt_2_over_pi * (x_clamped + self.coeff * x_clamped * x_clamped * x_clamped)
         return 0.5 * x * (1.0 + inner.tanh())
 
 class MpcCNN(cnn.Module):
