@@ -152,7 +152,7 @@ class MpcGELU(cnn.Module):
         # For |x| > 5, true GELU ≈ x (positive) or ≈ 0 (negative), so
         # clamping the *inner computation* input doesn't change the function
         # meaningfully but prevents catastrophic polynomial divergence.
-        x_clamped = x.clamp(-5.0, 5.0)
+        x_clamped = (x / 5.0).hardtanh() * 5.0
         # sqrt(2/pi) MUST multiply the inner expression BEFORE tanh
         inner = self.sqrt_2_over_pi * (x_clamped + self.coeff * x_clamped * x_clamped * x_clamped)
         return 0.5 * x * (1.0 + inner.tanh())
